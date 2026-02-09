@@ -1,10 +1,9 @@
-﻿
-import 'dart:ui';
+﻿import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
+import 'category_with_places.dart';
 import 'location_search_screen.dart';
-
 
 class HomeMainScreen extends StatefulWidget {
   const HomeMainScreen({Key? key}) : super(key: key);
@@ -14,6 +13,9 @@ class HomeMainScreen extends StatefulWidget {
 }
 
 class _HomeMainScreenState extends State<HomeMainScreen> {
+  final ScrollController _categoryScrollController = ScrollController();
+  int _activeCategoryIndex = 0;
+  bool _isSearchOpen = false;
   GoogleMapController? _mapController;
   bool _hasLocationPermission = false;
   final bool _showMap = false;
@@ -68,16 +70,33 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
   ]
 }''';
 
-  void _openSearchSheet(BuildContext context) {
-    showModalBottomSheet<void>(
+  void _openCategoryScreen(BuildContext context, {int initialCategoryIndex = 0}) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CategoryWithPlacesScreen(initialCategoryIndex: initialCategoryIndex),
+      ),
+    );
+  }
+
+  Future<void> _openSearchSheet(BuildContext context) async {
+    if (_isSearchOpen) {
+      return;
+    }
+    setState(() {
+      _isSearchOpen = true;
+    });
+    await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
+      barrierColor: Colors.black54,
       backgroundColor: Colors.transparent,
+      enableDrag: false,
       builder: (context) {
         return DraggableScrollableSheet(
-          initialChildSize: 0.62,
-          minChildSize: 0.4,
-          maxChildSize: 0.9,
+          initialChildSize: 0.8,
+          minChildSize: 0.8,
+          maxChildSize: 0.8,
           builder: (context, controller) {
             return Container(
               decoration: const BoxDecoration(
@@ -90,6 +109,12 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
         );
       },
     );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isSearchOpen = false;
+    });
   }
 
   @override
@@ -252,7 +277,20 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
     );
   }
 
-  List<_CategoryItem> categories = [];
+  List<_CategoryItem> categories = [
+    _CategoryItem(icon: Icons.fastfood, label: 'Food'),
+    _CategoryItem(icon: Icons.school, label: 'School'),
+    _CategoryItem(icon: Icons.store_mall_directory, label: 'Mall'),
+    _CategoryItem(icon: Icons.local_cafe, label: 'Cafe'),
+    _CategoryItem(icon: Icons.local_grocery_store, label: 'Mart'),
+    _CategoryItem(icon: Icons.local_hospital, label: 'Hospital'),
+    _CategoryItem(icon: Icons.park, label: 'Park'),
+    _CategoryItem(icon: Icons.business_center, label: 'Office'),
+    _CategoryItem(icon: Icons.flight, label: 'Airport'),
+    _CategoryItem(icon: Icons.hotel, label: 'Hotel'),
+    _CategoryItem(icon: Icons.fitness_center, label: 'Gym'),
+    _CategoryItem(icon: Icons.movie, label: 'Cinema'),
+  ];
 
 
 
@@ -280,19 +318,20 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
               ),
             ),
           ),
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Container(
-              margin: const EdgeInsets.all(16.0),
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-              decoration: BoxDecoration(
-                color: const Color(0xFF202020),
-                borderRadius: BorderRadius.circular(22),
-                border: Border.all(color: Colors.white12),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
+          if (!_isSearchOpen)
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: Container(
+                margin: const EdgeInsets.all(16.0),
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF202020),
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                   Container(
                     width: 32,
                     height: 4,
@@ -361,29 +400,32 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
                                 right: 0,
                                 top: 0,
                                 height: 55,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 18),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF2A2A2A),
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                  child: Align(
-                                    alignment: Alignment.centerLeft,
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: const [
-                                        Icon(Icons.search, color: Colors.white, size: 20),
-                                        SizedBox(width: 20),
-                                        Text(
-                                          'Hi Erlon, where to?',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.w700,
-                                            fontSize: 15,
-                                            fontFamily: 'SF Pro Display',
+                                child: GestureDetector(
+                                  onTap: () => _openSearchSheet(context),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF2A2A2A),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: const [
+                                          Icon(Icons.search, color: Colors.white, size: 20),
+                                          SizedBox(width: 20),
+                                          Text(
+                                            'Hi Erlon, where to?',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w700,
+                                              fontSize: 15,
+                                              fontFamily: 'SF Pro Display',
+                                            ),
                                           ),
-                                        ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -398,8 +440,26 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
                   SizedBox(
                     height: 96,
                     child: ListView.separated(
+                      controller: _categoryScrollController,
                       scrollDirection: Axis.horizontal,
-                      itemBuilder: (context, index) => _CategoryChip(item: categories[index]),
+                      itemBuilder: (context, index) => GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _activeCategoryIndex = index;
+                          });
+                          // Scroll to the tapped category
+                          _categoryScrollController.animateTo(
+                            (index * 88.0).clamp(0.0, _categoryScrollController.position.maxScrollExtent),
+                            duration: const Duration(milliseconds: 400),
+                            curve: Curves.ease,
+                          );
+                          _openCategoryScreen(context, initialCategoryIndex: index);
+                        },
+                        child: _CategoryChip(
+                          item: categories[index],
+                          isActive: index == _activeCategoryIndex,
+                        ),
+                      ),
                       separatorBuilder: (context, index) => const SizedBox(width: 10),
                       itemCount: categories.length,
                     ),
@@ -416,12 +476,12 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
                     title: const Text('Wesleyan University Philippines', style: TextStyle(color: Colors.white)),
                     subtitle: const Text('Mabini Extension', style: TextStyle(color: Colors.white54)),
                     trailing: const Text('5 km', style: TextStyle(color: Colors.white54)),
-                    onTap: () => _openSearchSheet(context),
+                    onTap: () => _openCategoryScreen(context),
                   ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -437,25 +497,49 @@ class _CategoryItem {
 
 class _CategoryChip extends StatelessWidget {
   final _CategoryItem item;
+  final bool isActive;
 
-  const _CategoryChip({required this.item});
+  const _CategoryChip({required this.item, this.isActive = false});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
       width: 78,
       height: 78,
       decoration: BoxDecoration(
-        color: const Color(0xFF2A2A2A),
+        color: isActive ? Colors.amber : const Color(0xFF2A2A2A),
         shape: BoxShape.circle,
-        border: Border.all(color: Colors.white.withOpacity(0.14), width: 1.2),
+        border: Border.all(
+          color: isActive ? Colors.amberAccent : Colors.white.withOpacity(0.14),
+          width: 1.8,
+        ),
+        boxShadow: isActive
+            ? [
+                BoxShadow(
+                  color: Colors.amber.withOpacity(0.3),
+                  blurRadius: 12,
+                )
+              ]
+            : [],
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(item.icon, color: Colors.white70, size: 21),
+          Icon(
+            item.icon,
+            color: isActive ? Colors.black : Colors.white70,
+            size: 21,
+          ),
           const SizedBox(height: 6),
-          Text(item.label, style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600)),
+          Text(
+            item.label,
+            style: TextStyle(
+              color: isActive ? Colors.black : Colors.white70,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );
