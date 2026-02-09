@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "622263264816",
+    "project_id": "fareappv2",
+    "storage_bucket": "fareappv2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:622263264816:android:992a5c04c9bffa04a1eff5",
+        "android_client_info": {
+          "package_name": "com.example.fareappremake"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC1AiCb2Bc6M-Ue6lOT9zLi5TLDimQnQwA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
