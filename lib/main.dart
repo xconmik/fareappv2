@@ -4,14 +4,20 @@ import 'screens/home_screen.dart';
 import 'screens/appearance_screen.dart';
 import 'screens/booking_details_screen.dart';
 import 'screens/empty_state_screen.dart';
+import 'screens/location_map_selection_screen.dart';
 import 'screens/location_search_screen.dart';
 import 'screens/home_main_screen.dart';
 import 'screens/fare_mode_screen.dart';
+import 'screens/splash_screen.dart';
 import 'theme/app_theme.dart';
 
-Future<void> main() async {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+  try {
+    await Firebase.initializeApp();
+  } catch (e) {
+    print('Firebase initialization error: $e');
+  }
   runApp(const MyApp());
 }
 
@@ -24,7 +30,8 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'FareAppRemake',
       theme: AppTheme.dark(),
-      home: const HomeMainScreen(),
+      themeMode: ThemeMode.dark,
+      home: const SplashScreen(),
       routes: {
         '/home_main': (context) => const HomeMainScreen(),
         '/fare_mode': (context) => const FareModeScreen(),
@@ -33,6 +40,7 @@ class MyApp extends StatelessWidget {
         '/booking_details': (context) => const BookingDetailsScreen(),
         '/empty': (context) => const EmptyStateScreen(),
         '/location_search': (context) => const LocationSearchScreen(),
+        '/location_map_selection': (context) => const LocationMapSelectionScreen(),
       },
     );
   }

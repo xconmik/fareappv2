@@ -4,6 +4,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'category_with_places.dart';
 import 'location_search_screen.dart';
+import '../widgets/fare_logo.dart';
 
 class HomeMainScreen extends StatefulWidget {
   const HomeMainScreen({Key? key}) : super(key: key);
@@ -18,57 +19,108 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
   bool _isSearchOpen = false;
   GoogleMapController? _mapController;
   bool _hasLocationPermission = false;
-  final bool _showMap = false;
-  static const bool _useMapId = true;
-  static const String _cloudMapId = '118c30a958d1028bec3bbb7e';
+  final bool _showMap = true;
+  static const bool _useMapId = false;
+  static const String _cloudMapId = '5c554f4f892ef6db87f0d2c1';
   bool _mapFailed = false;
-  static const String _mapStyle = '''{
-  "variant": "dark",
-  "styles": [
-    {
-      "id": "pointOfInterest.emergency.fire",
-      "label": {
-        "visible": true
+  static const String _mapStyle = '''[
+  {
+    "elementType": "geometry",
+    "stylers": [
+      {
+        "color": "#1f1f23"
       }
-    },
-    {
-      "id": "pointOfInterest.emergency.hospital",
-      "geometry": {
-        "visible": true
+    ]
+  },
+  {
+    "elementType": "labels.text.fill",
+    "stylers": [
+      {
+        "color": "#8e8e93"
       }
-    },
-    {
-      "id": "pointOfInterest.emergency.police",
-      "label": {
-        "visible": true
+    ]
+  },
+  {
+    "elementType": "labels.text.stroke",
+    "stylers": [
+      {
+        "visibility": "off"
       }
-    },
-    {
-      "id": "pointOfInterest.landmark",
-      "label": {
-        "visible": true
+    ]
+  },
+  {
+    "featureType": "road",
+    "elementType": "geometry",
+    "stylers": [
+      {
+        "color": "#2b2b30"
       }
-    },
-    {
-      "id": "pointOfInterest.lodging",
-      "label": {
-        "visible": true
+    ]
+  },
+  {
+    "featureType": "road",
+    "elementType": "geometry.stroke",
+    "stylers": [
+      {
+        "color": "#27272b"
       }
-    },
-    {
-      "id": "political.city",
-      "label": {
-        "visible": true
+    ]
+  },
+  {
+    "featureType": "road.highway",
+    "elementType": "labels.text.fill",
+    "stylers": [
+      {
+        "color": "#d0a92b"
       }
-    },
-    {
-      "id": "political.neighborhood",
-      "label": {
-        "visible": false
+    ]
+  },
+  {
+    "featureType": "transit",
+    "elementType": "geometry",
+    "stylers": [
+      {
+        "color": "#3a3a3e"
       }
-    }
-  ]
-}''';
+    ]
+  },
+  {
+    "featureType": "water",
+    "elementType": "geometry",
+    "stylers": [
+      {
+        "color": "#0f1114"
+      }
+    ]
+  },
+  {
+    "featureType": "poi",
+    "elementType": "geometry.fill",
+    "stylers": [
+      {
+        "color": "#2c2c2f"
+      }
+    ]
+  },
+  {
+    "featureType": "poi.business",
+    "elementType": "labels.text.fill",
+    "stylers": [
+      {
+        "color": "#e1c46a"
+      }
+    ]
+  },
+  {
+    "featureType": "poi.park",
+    "elementType": "geometry.fill",
+    "stylers": [
+      {
+        "color": "#1f2428"
+      }
+    ]
+  }
+]''';
 
   void _openCategoryScreen(BuildContext context, {int initialCategoryIndex = 0}) {
     Navigator.of(context).push(
@@ -85,7 +137,7 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
     setState(() {
       _isSearchOpen = true;
     });
-    await showModalBottomSheet<void>(
+    final result = await showModalBottomSheet<dynamic>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
@@ -109,12 +161,30 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
         );
       },
     );
+    
     if (!mounted) {
       return;
     }
+    
     setState(() {
       _isSearchOpen = false;
     });
+
+    // Handle search result - animate map to selected location
+    if (result != null) {
+      try {
+        if (result.latitude != null && result.longitude != null && _mapController != null) {
+          await _mapController!.animateCamera(
+            CameraUpdate.newLatLngZoom(
+              LatLng(result.latitude!, result.longitude!),
+              15.5,
+            ),
+          );
+        }
+      } catch (e) {
+        print('Error animating to search result: $e');
+      }
+    }
   }
 
   @override
@@ -179,16 +249,9 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
     return GoogleMap(
       initialCameraPosition: const CameraPosition(
         target: LatLng(12.8797, 121.7740),
-        zoom: 5.6,
+        zoom: 15.0,
       ),
       cloudMapId: _useMapId ? _cloudMapId : null,
-      cameraTargetBounds: CameraTargetBounds(
-        LatLngBounds(
-          southwest: const LatLng(4.2158, 116.9542),
-          northeast: const LatLng(21.3219, 126.6052),
-        ),
-      ),
-      minMaxZoomPreference: const MinMaxZoomPreference(5.0, 18.0),
       onMapCreated: (controller) {
         _mapController = controller;
         if (!_useMapId) {
@@ -202,12 +265,19 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
       zoomControlsEnabled: false,
       myLocationButtonEnabled: true,
       myLocationEnabled: _hasLocationPermission,
-      compassEnabled: false,
-      mapToolbarEnabled: false,
+      mapType: MapType.normal,
     );
   }
 
   Widget _buildMapPlaceholder() {
+    final size = MediaQuery.of(context).size;
+    final width = size.width;
+    final height = size.height;
+    final scale = (width / 375).clamp(0.85, 1.2);
+    final grid = 8.0 * scale;
+    final topCircle = width * 0.45;
+    final bottomCircle = width * 0.55;
+
     return Stack(
       children: [
         Container(
@@ -225,11 +295,11 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
           ),
         ),
         Positioned(
-          top: -40,
-          right: -30,
+          top: -grid * 5,
+          right: -grid * 4,
           child: Container(
-            width: 180,
-            height: 180,
+            width: topCircle,
+            height: topCircle,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: const Color(0xFFD4AF37).withOpacity(0.08),
@@ -237,11 +307,11 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
           ),
         ),
         Positioned(
-          bottom: -60,
-          left: -40,
+          bottom: -grid * 7.5,
+          left: -grid * 5,
           child: Container(
-            width: 220,
-            height: 220,
+            width: bottomCircle,
+            height: bottomCircle,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: Colors.white.withOpacity(0.04),
@@ -249,24 +319,24 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
           ),
         ),
         Positioned(
-          top: 120,
-          left: 16,
-          right: 16,
+          top: height * 0.15,
+          left: grid * 2,
+          right: grid * 2,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            padding: EdgeInsets.symmetric(horizontal: grid * 1.75, vertical: grid * 1.25),
             decoration: BoxDecoration(
               color: const Color(0xFF232323),
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(grid * 1.75),
               border: Border.all(color: Colors.white12),
             ),
             child: Row(
-              children: const [
-                Icon(Icons.map, color: Colors.white54, size: 18),
-                SizedBox(width: 10),
+              children: [
+                Icon(Icons.map, color: Colors.white54, size: grid * 2.25),
+                SizedBox(width: grid * 1.25),
                 Expanded(
                   child: Text(
                     'Map preview disabled (quota off)',
-                    style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600),
+                    style: TextStyle(color: Colors.white54, fontSize: grid * 1.5, fontWeight: FontWeight.w600),
                   ),
                 ),
               ],
@@ -296,6 +366,18 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final size = media.size;
+    final width = size.width;
+    final scale = (width / 375).clamp(0.85, 1.2);
+    final grid = 8.0 * scale;
+    final minTap = (grid * 6).clamp(48.0, 72.0);
+    final isWide = width >= 600;
+    final searchHeight = grid * 7.25;
+    final chipSize = grid * 9.5;
+    final titleSize = grid * 2.0;
+    final bodySize = grid * 1.5;
+    final captionSize = grid * 1.25;
 
     return Scaffold(
       backgroundColor: const Color(0xFF1C1C1E),
@@ -305,183 +387,152 @@ class _HomeMainScreenState extends State<HomeMainScreen> {
           if (_mapFailed) Positioned.fill(child: _buildMapPlaceholder()),
           SafeArea(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              padding: EdgeInsets.symmetric(horizontal: grid * 2, vertical: grid),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('Home', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                  IconButton(
-                    icon: const Icon(Icons.menu, color: Colors.white),
-                    onPressed: () => Navigator.pushNamed(context, '/settings'),
+                  FareLogo(height: titleSize * 2.5),
+                  SizedBox(
+                    width: minTap,
+                    height: minTap,
+                    child: IconButton(
+                      icon: Icon(Icons.menu, color: Colors.white, size: grid * 2.4),
+                      onPressed: () => Navigator.pushNamed(context, '/settings'),
+                    ),
                   ),
                 ],
               ),
             ),
           ),
-          if (!_isSearchOpen)
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: Container(
-                margin: const EdgeInsets.all(16.0),
-                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF202020),
-                  borderRadius: BorderRadius.circular(22),
-                  border: Border.all(color: Colors.white12),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                  Container(
-                    width: 32,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.white30,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
+            if (!_isSearchOpen)
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: Container(
+                  width: double.infinity,
+                  margin: EdgeInsets.zero,
+                  padding: EdgeInsets.symmetric(horizontal: grid * 2, vertical: grid * 1.5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF202020),
+                    borderRadius: BorderRadius.circular(grid * 2.75),
+                    border: Border.all(color: Colors.white12),
                   ),
-                  const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(16),
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(16),
-                          color: Colors.white.withOpacity(0.05),
-                          border: Border.all(color: Colors.white.withOpacity(0.18), width: 1.0),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.35),
-                              blurRadius: 18,
-                              offset: const Offset(0, 10),
-                            ),
-                          ],
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: grid * 4,
+                          height: grid * 0.5,
+                          decoration: BoxDecoration(
+                            color: Colors.white30,
+                            borderRadius: BorderRadius.circular(grid * 12),
+                          ),
                         ),
-                        child: SizedBox(
-                          height: 80,
-                          child: Stack(
-                            children: [
-                              Positioned(
-                                left: 0,
-                                right: 0,
-                                top: 43,
-                                height: 38,
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    gradient: const LinearGradient(
-                                      begin: Alignment.centerLeft,
-                                      end: Alignment.centerRight,
-                                      colors: [
-                                        Color(0xFFC9A24D),
-                                        Color(0xFFE4C46F),
-                                        Color(0xFFF2D58A),
-                                      ],
-                                      stops: [0.0, 0.55, 1.0],
-                                    ),
-                                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(10)),
+                        SizedBox(height: grid * 1.5),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(grid * 2),
+                          child: BackdropFilter(
+                            filter: ImageFilter.blur(sigmaX: grid * 1.5, sigmaY: grid * 1.5),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(grid * 2),
+                                color: Colors.white.withOpacity(0.05),
+                                border: Border.all(color: Colors.white.withOpacity(0.18), width: 1.0),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.35),
+                                    blurRadius: grid * 2.25,
+                                    offset: Offset(0, grid * 1.25),
                                   ),
-                                  child: const Center(
-                                    child: Text(
-                                      '51 drivers available nearby',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                        color: Colors.white,
-                                        fontSize: 11,
-                                        letterSpacing: 0.2,
-                                        fontFamily: 'SF Pro Display',
-                                      ),
-                                    ),
-                                  ),
-                                ),
+                                ],
                               ),
-                              Positioned(
-                                left: 0,
-                                right: 0,
-                                top: 0,
-                                height: 55,
+                              child: SizedBox(
+                                height: searchHeight,
                                 child: GestureDetector(
                                   onTap: () => _openSearchSheet(context),
                                   child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                                    padding: EdgeInsets.symmetric(horizontal: grid * 2.25),
                                     decoration: BoxDecoration(
                                       color: const Color(0xFF2A2A2A),
-                                      borderRadius: BorderRadius.circular(10),
+                                      borderRadius: BorderRadius.circular(grid * 1.25),
                                     ),
-                                    child: Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: const [
-                                          Icon(Icons.search, color: Colors.white, size: 20),
-                                          SizedBox(width: 20),
-                                          Text(
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.search, color: Colors.white, size: grid * 2.5),
+                                        SizedBox(width: grid * 2.5),
+                                        Expanded(
+                                          child: Text(
                                             'Hi Erlon, where to?',
+                                            overflow: TextOverflow.ellipsis,
                                             style: TextStyle(
                                               color: Colors.white,
                                               fontWeight: FontWeight.w700,
-                                              fontSize: 15,
+                                              fontSize: bodySize,
                                               fontFamily: 'SF Pro Display',
                                             ),
                                           ),
-                                        ],
-                                      ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
                               ),
-                            ],
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-                  SizedBox(
-                    height: 96,
-                    child: ListView.separated(
-                      controller: _categoryScrollController,
-                      scrollDirection: Axis.horizontal,
-                      itemBuilder: (context, index) => GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _activeCategoryIndex = index;
-                          });
-                          // Scroll to the tapped category
-                          _categoryScrollController.animateTo(
-                            (index * 88.0).clamp(0.0, _categoryScrollController.position.maxScrollExtent),
-                            duration: const Duration(milliseconds: 400),
-                            curve: Curves.ease,
-                          );
-                          _openCategoryScreen(context, initialCategoryIndex: index);
-                        },
-                        child: _CategoryChip(
-                          item: categories[index],
-                          isActive: index == _activeCategoryIndex,
+                        SizedBox(height: grid * 2.25),
+                        SizedBox(
+                          height: chipSize,
+                          child: ListView.separated(
+                            controller: _categoryScrollController,
+                            scrollDirection: Axis.horizontal,
+                            itemBuilder: (context, index) => GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  _activeCategoryIndex = index;
+                                });
+                                _categoryScrollController.animateTo(
+                                  (index * (chipSize + grid)).clamp(0.0, _categoryScrollController.position.maxScrollExtent),
+                                  duration: const Duration(milliseconds: 400),
+                                  curve: Curves.ease,
+                                );
+                                _openCategoryScreen(context, initialCategoryIndex: index);
+                              },
+                              child: _CategoryChip(
+                                item: categories[index],
+                                isActive: index == _activeCategoryIndex,
+                                size: chipSize,
+                                scale: scale,
+                              ),
+                            ),
+                            separatorBuilder: (context, index) => SizedBox(width: grid * 1.25),
+                            itemCount: categories.length,
+                          ),
                         ),
-                      ),
-                      separatorBuilder: (context, index) => const SizedBox(width: 10),
-                      itemCount: categories.length,
+                        SizedBox(height: grid * 1.5),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text('Recents', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: bodySize)),
+                            ),
+                            SizedBox(height: grid * 0.75),
+                            Center(
+                              child: Text(
+                                'No recent searches yet.\nUse the search button to find places.',
+                                style: TextStyle(color: Colors.white54, fontSize: bodySize),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  const Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('Recents', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600)),
-                  ),
-                  const SizedBox(height: 6),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.location_on, color: Colors.white70),
-                    title: const Text('Wesleyan University Philippines', style: TextStyle(color: Colors.white)),
-                    subtitle: const Text('Mabini Extension', style: TextStyle(color: Colors.white54)),
-                    trailing: const Text('5 km', style: TextStyle(color: Colors.white54)),
-                    onTap: () => _openCategoryScreen(context),
-                  ),
-                  ],
                 ),
               ),
-            ),
         ],
       ),
     );
@@ -498,27 +549,36 @@ class _CategoryItem {
 class _CategoryChip extends StatelessWidget {
   final _CategoryItem item;
   final bool isActive;
+  final double size;
+  final double scale;
 
-  const _CategoryChip({required this.item, this.isActive = false});
+  const _CategoryChip({
+    required this.item,
+    required this.size,
+    required this.scale,
+    this.isActive = false,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final grid = 8.0 * scale;
+
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
-      width: 78,
-      height: 78,
+      width: size,
+      height: size,
       decoration: BoxDecoration(
         color: isActive ? Colors.amber : const Color(0xFF2A2A2A),
         shape: BoxShape.circle,
         border: Border.all(
           color: isActive ? Colors.amberAccent : Colors.white.withOpacity(0.14),
-          width: 1.8,
+          width: grid * 0.225,
         ),
         boxShadow: isActive
             ? [
                 BoxShadow(
                   color: Colors.amber.withOpacity(0.3),
-                  blurRadius: 12,
+                  blurRadius: grid * 1.5,
                 )
               ]
             : [],
@@ -529,14 +589,14 @@ class _CategoryChip extends StatelessWidget {
           Icon(
             item.icon,
             color: isActive ? Colors.black : Colors.white70,
-            size: 21,
+            size: grid * 2.5,
           ),
-          const SizedBox(height: 6),
+          SizedBox(height: grid * 0.75),
           Text(
             item.label,
             style: TextStyle(
               color: isActive ? Colors.black : Colors.white70,
-              fontSize: 12,
+              fontSize: grid * 1.5,
               fontWeight: FontWeight.w600,
             ),
           ),

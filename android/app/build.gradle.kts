@@ -6,10 +6,18 @@ plugins {
     id("com.google.gms.google-services")
 }
 
+import java.util.Properties
+
 android {
-    namespace = "com.example.fareappremake"
+    namespace = "com.fare.UserAPK"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
+
+    val secretsFile = rootProject.file("secrets.properties")
+    val secrets = Properties()
+    if (secretsFile.exists()) {
+        secretsFile.inputStream().use { secrets.load(it) }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -22,13 +30,15 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.fareappremake"
+        applicationId = "com.fare.UserAPK"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        manifestPlaceholders["GOOGLE_MAPS_API_KEY"] = secrets.getProperty("GOOGLE_MAPS_API_KEY", "")
     }
 
     buildTypes {

@@ -2,8 +2,12 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
-import '../mock/mock_data.dart';
 import 'category_with_places.dart';
+import '../services/ride_matching_service.dart';
+import '../services/google_places_service.dart';
+import '../config/app_config.dart';
+import 'ride_status_screen.dart';
+import '../theme/responsive.dart';
 
 class LocationSearchScreen extends StatelessWidget {
   const LocationSearchScreen({Key? key}) : super(key: key);
@@ -14,34 +18,92 @@ class LocationSearchScreen extends StatelessWidget {
   }
 }
 
-class LocationSearchSheet extends StatelessWidget {
+class LocationSearchSheet extends StatefulWidget {
   const LocationSearchSheet({Key? key, this.controller}) : super(key: key);
 
   final ScrollController? controller;
 
-  static const _recents = <_RecentItem>[
-    _RecentItem(
-      title: 'Crab & Bites',
-      subtitle: 'Kapt. Pepe',
-      status: 'Open',
-      distanceKm: '2 km',
-    ),
-    _RecentItem(
-      title: 'Jollibee Circum',
-      subtitle: 'Circumferential Road',
-      status: 'Closed',
-      distanceKm: '5 km',
-    ),
-    _RecentItem(
-      title: "McDonald's Sancianco",
-      subtitle: 'Maharlika Highway',
-      status: null,
-      distanceKm: '8 km',
-    ),
-  ];
+  @override
+  State<LocationSearchSheet> createState() => _LocationSearchSheetState();
+}
+
+class _LocationSearchSheetState extends State<LocationSearchSheet> {
+  late TextEditingController _searchController;
+  late GooglePlacesService _placesService;
+  List<PlacePrediction> _autocompleteResults = [];
+  bool _showAutocomplete = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController = TextEditingController();
+    _initPlacesService();
+  }
+
+  void _initPlacesService() async {
+    try {
+      final apiKey = await AppConfig.getGoogleMapsApiKey();
+      _placesService = GooglePlacesService(apiKey: apiKey);
+    } catch (e) {
+      print('Error initializing Places service: $e');
+      _placesService = GooglePlacesService(apiKey: 'AIzaSyD7eRiM0iLc8DJt3DqdjMhiI8A6BmzBQyY');
+    }
+  }
+
+  Future<void> _handleSearchChanged(String value) async {
+    final query = value.trim();
+    setState(() {
+      if (query.isEmpty) {
+        _showAutocomplete = false;
+        _autocompleteResults = [];
+        return;
+      }
+      _showAutocomplete = true;
+    });
+
+    if (query.isNotEmpty) {
+      try {
+        final results = await _placesService.getAutocompletePredictions(
+          input: query,
+          latitude: null,
+          longitude: null,
+        );
+        if (mounted) {
+          setState(() {
+            _autocompleteResults = results;
+          });
+        }
+      } catch (e) {
+        print('Error searching places: $e');
+      }
+    }
+  }
+
+  Future<void> _handleSearchResultTap(PlacePrediction result) async {
+    try {
+      // Get place details to get coordinates
+      final details = await _placesService.getPlaceDetails(
+        placeId: result.placeId,
+      );
+
+      if (details != null && mounted) {
+        // Pass the location back to home screen and close search sheet
+        Navigator.pop(context, details);
+      }
+    } catch (e) {
+      print('Error getting place details: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final r = Responsive.of(context);
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
 
     return SafeArea(
@@ -49,112 +111,100 @@ class LocationSearchSheet extends StatelessWidget {
       child: AnimatedPadding(
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
-        padding: EdgeInsets.fromLTRB(16, 12, 16, 20 + bottomInset),
+        padding: EdgeInsets.fromLTRB(
+          0,
+          r.space(24),
+          0,
+          0,
+        ),
         child: Column(
           children: [
             Container(
-              width: 36,
-              height: 4,
+              width: r.space(36),
+              height: r.space(4),
               decoration: BoxDecoration(
                 color: Colors.white24,
                 borderRadius: BorderRadius.circular(999),
               ),
             ),
-            const SizedBox(height: 12),
+            SizedBox(height: r.space(12)),
             ClipRRect(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(r.radius(16)),
               child: BackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: EdgeInsets.symmetric(horizontal: r.space(12), vertical: r.space(8)),
                   decoration: BoxDecoration(
                     color: Colors.white.withOpacity(0.05),
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(r.radius(16)),
                     border: Border.all(color: Colors.white.withOpacity(0.16)),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.location_on, color: Colors.white70, size: 18),
-                      const SizedBox(width: 8),
+                      Icon(Icons.location_on, color: Colors.white70, size: r.icon(18)),
+                      SizedBox(width: r.space(8)),
                       Expanded(
                         child: TextField(
+                          controller: _searchController,
                           autofocus: true,
-                          style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
-                          decoration: const InputDecoration(
+                          onChanged: _handleSearchChanged,
+                          style: TextStyle(color: Colors.white, fontSize: r.font(12), fontWeight: FontWeight.w600),
+                          decoration: InputDecoration(
                             hintText: 'Search destination',
-                            hintStyle: TextStyle(color: Colors.white54, fontSize: 12),
+                            hintStyle: TextStyle(color: Colors.white54, fontSize: r.font(12)),
                             border: InputBorder.none,
                           ),
                         ),
                       ),
                       IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white70, size: 18),
-                        onPressed: () => Navigator.pop(context),
+                        icon: Icon(Icons.close, color: Colors.white70, size: r.icon(18)),
+                        onPressed: () {
+                          _searchController.clear();
+                          Navigator.pop(context);
+                        },
                       ),
                     ],
                   ),
                 ),
               ),
             ),
-            const SizedBox(height: 14),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text('Recents', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600)),
-            ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: ListView(
-                controller: controller,
-                children: _recents
-                    .map(
-                      (item) => ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.location_on, color: Colors.white70),
-                        title: Text(item.title, style: const TextStyle(color: Colors.white, fontSize: 13)),
-                        subtitle: Row(
-                          children: [
-                            Text(item.subtitle, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                            if (item.status != null) ...[
-                              const SizedBox(width: 6),
-                              Text(
-                                item.status!,
-                                style: TextStyle(
-                                  color: item.status == 'Open' ? const Color(0xFFD4AF37) : Colors.white54,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 11,
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                        trailing: Text(item.distanceKm, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                        onTap: () {
-                          MockData.destination = item.title;
-                          MockData.routeSummary = '${MockData.pickup} -> ${item.title}';
-                          Navigator.pop(context);
-                        },
+            SizedBox(height: r.space(14)),
+            if (_showAutocomplete && _autocompleteResults.isNotEmpty)
+              Expanded(
+                child: ListView.builder(
+                  controller: widget.controller,
+                  itemCount: _autocompleteResults.length,
+                  itemBuilder: (context, index) {
+                    final result = _autocompleteResults[index];
+                    return ListTile(
+                      title: Text(
+                        result.mainText,
+                        style: TextStyle(color: Colors.white70, fontSize: r.font(12)),
                       ),
-                    )
-                    .toList(),
+                      subtitle: result.secondaryText != null
+                          ? Text(
+                              result.secondaryText!,
+                              style: TextStyle(color: Colors.white38, fontSize: r.font(10)),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            )
+                          : null,
+                      onTap: () => _handleSearchResultTap(result),
+                    );
+                  },
+                ),
+              )
+            else if (!_showAutocomplete)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Recents',
+                  style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: r.font(12)),
+                ),
               ),
-            ),
           ],
         ),
       ),
     );
   }
-}
-
-class _RecentItem {
-  final String title;
-  final String subtitle;
-  final String? status;
-  final String distanceKm;
-
-  const _RecentItem({
-    required this.title,
-    required this.subtitle,
-    required this.status,
-    required this.distanceKm,
-  });
 }

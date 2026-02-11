@@ -1,10 +1,12 @@
 ﻿import 'package:flutter/material.dart';
+import '../theme/responsive.dart';
 
 class FareModeScreen extends StatelessWidget {
   const FareModeScreen({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
+    final r = Responsive.of(context);
     return Scaffold(
       backgroundColor: const Color(0xFF1C1C1E),
       appBar: AppBar(
@@ -14,17 +16,27 @@ class FareModeScreen extends StatelessWidget {
         iconTheme: const IconThemeData(color: Colors.white),
       ),
       body: Padding(
-        padding: const EdgeInsets.all(24.0),
+        padding: EdgeInsets.all(r.space(24)),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Fare Mode', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            const Text('Set fare method to default.', style: TextStyle(color: Colors.grey)),
-            const SizedBox(height: 12),
+            Text(
+              'Fare Mode',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: r.font(20),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: r.space(16)),
+            Text(
+              'Set fare method to default.',
+              style: TextStyle(color: Colors.grey, fontSize: r.font(12)),
+            ),
+            SizedBox(height: r.space(12)),
             Row(
               children: [
-                const Text('On', style: TextStyle(color: Colors.white)),
+                Text('On', style: TextStyle(color: Colors.white, fontSize: r.font(14))),
                 const Spacer(),
                 Switch(
                   value: true,

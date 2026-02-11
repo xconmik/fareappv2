@@ -5,12 +5,16 @@ class PlaceModel {
   final String subtitle;
   final String? status;
   final String distance;
+  final double? latitude;
+  final double? longitude;
 
   const PlaceModel({
     required this.title,
     required this.subtitle,
     required this.status,
     required this.distance,
+    this.latitude,
+    this.longitude,
   });
 
   factory PlaceModel.fromJson(Map<String, dynamic> json) {
@@ -19,6 +23,8 @@ class PlaceModel {
       subtitle: json['subtitle'] as String? ?? '',
       status: json['status'] as String?,
       distance: json['distance'] as String? ?? '',
+      latitude: json['latitude'] as double?,
+      longitude: json['longitude'] as double?,
     );
   }
 }

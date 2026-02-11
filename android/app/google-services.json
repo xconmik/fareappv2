@@ -7,9 +7,28 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:622263264816:android:992a5c04c9bffa04a1eff5",
+        "mobilesdk_app_id": "1:622263264816:android:b350083d11f210bfa1eff5",
         "android_client_info": {
-          "package_name": "com.example.fareappremake"
+          "package_name": "com.fare.UserAPK"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC1AiCb2Bc6M-Ue6lOT9zLi5TLDimQnQwA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:622263264816:android:fcd2550db5428a85a1eff5",
+        "android_client_info": {
+          "package_name": "com.fare.driverAPK"
         }
       },
       "oauth_client": [],
