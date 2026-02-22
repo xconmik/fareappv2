@@ -1,6 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/motion_presets.dart';
+
 Future<void> showAppSideMenu(BuildContext context) async {
   final user = FirebaseAuth.instance.currentUser;
   final displayName = (user?.displayName != null && user!.displayName!.trim().isNotEmpty)
@@ -15,7 +17,7 @@ Future<void> showAppSideMenu(BuildContext context) async {
     barrierDismissible: true,
     barrierLabel: 'Side menu',
     barrierColor: Colors.black54,
-    transitionDuration: const Duration(milliseconds: 300),
+    transitionDuration: kAppMotion.overlaySlide,
     pageBuilder: (dialogContext, animation, secondaryAnimation) {
       return Align(
         alignment: Alignment.centerRight,

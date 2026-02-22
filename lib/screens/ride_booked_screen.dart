@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../services/ride_matching_service.dart';
+import '../theme/motion_presets.dart';
 import '../theme/responsive.dart';
 import '../widgets/fare_map.dart';
 import '../widgets/app_side_menu.dart';
@@ -19,16 +20,90 @@ class RideBookedScreen extends StatefulWidget {
 }
 
 class _RideBookedScreenState extends State<RideBookedScreen> {
+  static const Duration _snakeFrameInterval = Duration(milliseconds: 85);
+  static const double _snakeStep = 0.028;
+  static const double _snakeSegmentLength = 0.24;
+
   Timer? _simTimer;
+  Timer? _routeSnakeTimer;
   double _simProgress = 0.0;
+  final ValueNotifier<double> _routeSnakeProgress = ValueNotifier<double>(_snakeSegmentLength);
   LatLng? _simStart;
   LatLng? _simEnd;
   LatLng? _simulatedDriverPosition;
+  LatLng? _routeSnakeStart;
+  LatLng? _routeSnakeEnd;
 
   @override
   void dispose() {
     _simTimer?.cancel();
+    _routeSnakeTimer?.cancel();
+    _routeSnakeProgress.dispose();
     super.dispose();
+  }
+
+  void _startRouteSnakeAnimation({required LatLng start, required LatLng end}) {
+    final sameRoute = _routeSnakeStart == start && _routeSnakeEnd == end;
+    _routeSnakeStart = start;
+    _routeSnakeEnd = end;
+
+    if (!sameRoute) {
+      _routeSnakeProgress.value = _snakeSegmentLength;
+    }
+
+    if (_routeSnakeTimer != null) {
+      return;
+    }
+
+    _routeSnakeTimer = Timer.periodic(_snakeFrameInterval, (_) {
+      if (!mounted || _routeSnakeTimer == null) {
+        return;
+      }
+      final next = _routeSnakeProgress.value + _snakeStep;
+      _routeSnakeProgress.value =
+          next >= 1.0 + _snakeSegmentLength ? _snakeSegmentLength : next;
+    });
+  }
+
+  void _stopRouteSnakeAnimation() {
+    _routeSnakeTimer?.cancel();
+    _routeSnakeTimer = null;
+    _routeSnakeStart = null;
+    _routeSnakeEnd = null;
+    _routeSnakeProgress.value = _snakeSegmentLength;
+  }
+
+  LatLng _lerpLatLng(LatLng start, LatLng end, double t) {
+    return LatLng(
+      start.latitude + (end.latitude - start.latitude) * t,
+      start.longitude + (end.longitude - start.longitude) * t,
+    );
+  }
+
+  List<List<LatLng>> _buildSnakeSegments(LatLng start, LatLng end, double progress) {
+    final tailT = progress - _snakeSegmentLength;
+    final headT = progress;
+
+    if (headT <= 1.0) {
+      return [
+        [
+          _lerpLatLng(start, end, tailT.clamp(0.0, 1.0)),
+          _lerpLatLng(start, end, headT.clamp(0.0, 1.0)),
+        ],
+      ];
+    }
+
+    final wrappedHead = headT - 1.0;
+    return [
+      [
+        _lerpLatLng(start, end, tailT.clamp(0.0, 1.0)),
+        _lerpLatLng(start, end, 1.0),
+      ],
+      [
+        _lerpLatLng(start, end, 0.0),
+        _lerpLatLng(start, end, wrappedHead.clamp(0.0, 1.0)),
+      ],
+    ];
   }
 
   void _startSimulation({required LatLng start, required LatLng end}) {
@@ -108,9 +183,12 @@ class _RideBookedScreenState extends State<RideBookedScreen> {
   Widget _buildMap(BuildContext context, RideMatchingService service) {
     const fallbackTarget = LatLng(14.5995, 120.9842);
 
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: service.watchRideRequest(widget.requestId),
-      builder: (context, snapshot) {
+    return ValueListenableBuilder<double>(
+      valueListenable: _routeSnakeProgress,
+      builder: (context, snakeProgress, _) {
+        return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: service.watchRideRequest(widget.requestId),
+          builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const FareMap(
             target: fallbackTarget,
@@ -154,6 +232,15 @@ class _RideBookedScreenState extends State<RideBookedScreen> {
                     ? LatLng(destinationLat!, destinationLng!)
                     : fallbackTarget;
 
+        if (hasPickup && hasDestination) {
+          _startRouteSnakeAnimation(
+            start: LatLng(pickupLat!, pickupLng!),
+            end: LatLng(destinationLat!, destinationLng!),
+          );
+        } else {
+          _stopRouteSnakeAnimation();
+        }
+
         if (isAssigned && !hasDriverLocation && hasPickup && hasDestination) {
           _startSimulation(
             start: LatLng(pickupLat!, pickupLng!),
@@ -166,6 +253,14 @@ class _RideBookedScreenState extends State<RideBookedScreen> {
         final driverPosition = hasDriverLocation
             ? LatLng(driverLat!, driverLng!)
             : _simulatedDriverPosition;
+
+        final snakeSegments = hasPickup && hasDestination
+            ? _buildSnakeSegments(
+                LatLng(pickupLat!, pickupLng!),
+                LatLng(destinationLat!, destinationLng!),
+                snakeProgress,
+              )
+            : const <List<LatLng>>[];
 
         final markers = <Marker>{
           if (hasPickup)
@@ -193,12 +288,30 @@ class _RideBookedScreenState extends State<RideBookedScreen> {
           if (hasPickup && hasDestination)
             Polyline(
               polylineId: const PolylineId('route'),
-              color: Colors.white.withOpacity(0.6),
-              width: 4,
+              color: Colors.white.withValues(alpha: 0.35),
+              width: 5,
               points: [
                 LatLng(pickupLat!, pickupLng!),
                 LatLng(destinationLat!, destinationLng!),
               ],
+            ),
+          for (var i = 0; i < snakeSegments.length; i++)
+            Polyline(
+              polylineId: PolylineId('route_snake_glow_$i'),
+              color: Colors.white.withValues(alpha: 0.42),
+              width: 10,
+              startCap: Cap.roundCap,
+              endCap: Cap.roundCap,
+              points: snakeSegments[i],
+            ),
+          for (var i = 0; i < snakeSegments.length; i++)
+            Polyline(
+              polylineId: PolylineId('route_snake_core_$i'),
+              color: Colors.white,
+              width: 6,
+              startCap: Cap.roundCap,
+              endCap: Cap.roundCap,
+              points: snakeSegments[i],
             ),
         };
 
@@ -212,6 +325,8 @@ class _RideBookedScreenState extends State<RideBookedScreen> {
           mapToolbarEnabled: false,
           compassEnabled: false,
           tiltGesturesEnabled: false,
+        );
+          },
         );
       },
     );
@@ -288,7 +403,7 @@ class _RideBookedScreenState extends State<RideBookedScreen> {
             child: Padding(
               padding: EdgeInsets.only(top: r.space(14)),
               child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
+                duration: kAppMotion.switcher,
                 transitionBuilder: (child, animation) {
                   final inTween = Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero);
                   final outTween = Tween<Offset>(begin: Offset.zero, end: const Offset(-1, 0));

@@ -116,7 +116,7 @@ class FareMap extends StatefulWidget {
     this.compassEnabled = false,
     this.tiltGesturesEnabled = false,
     this.onMapCreated,
-    this.cloudMapId = consoleCloudMapId,
+    this.cloudMapId,
   }) : super(key: key);
 
   final LatLng target;

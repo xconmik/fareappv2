@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../theme/responsive.dart';
+import '../theme/motion_presets.dart';
 import '../widgets/fare_map.dart';
 import '../widgets/app_side_menu.dart';
 import '../services/ride_matching_service.dart';
@@ -15,6 +16,9 @@ class BookingDetailsScreen extends StatefulWidget {
   final Future<LatLng?> Function()? embeddedMapCenterProvider;
   final ValueChanged<bool>? onEmbeddedAdjustingChanged;
   final ValueChanged<LatLng>? onEmbeddedAdjustTargetChanged;
+  final ValueChanged<LatLng?>? onEmbeddedPickupPointChanged;
+  final ValueChanged<LatLng?>? onEmbeddedDestinationPointChanged;
+  final ValueChanged<bool?>? onEmbeddedAdjustPickupModeChanged;
 
   const BookingDetailsScreen({
     super.key,
@@ -24,6 +28,9 @@ class BookingDetailsScreen extends StatefulWidget {
     this.embeddedMapCenterProvider,
     this.onEmbeddedAdjustingChanged,
     this.onEmbeddedAdjustTargetChanged,
+    this.onEmbeddedPickupPointChanged,
+    this.onEmbeddedDestinationPointChanged,
+    this.onEmbeddedAdjustPickupModeChanged,
   });
 
   @override
@@ -45,10 +52,13 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
   double? _selectedLng;
   String _adjustLocationName = '';
   bool _isConfirmingAdjust = false;
+  LatLng? _lastReportedEmbeddedPickup;
+  LatLng? _lastReportedEmbeddedDestination;
 
   void _closeBookingView() {
     if (widget.embedded) {
       widget.onEmbeddedAdjustingChanged?.call(false);
+      widget.onEmbeddedAdjustPickupModeChanged?.call(null);
     }
     if (widget.embedded) {
       widget.onCloseRequested?.call();
@@ -61,6 +71,7 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
   void dispose() {
     if (widget.embedded) {
       widget.onEmbeddedAdjustingChanged?.call(false);
+      widget.onEmbeddedAdjustPickupModeChanged?.call(null);
     }
     _mapController?.dispose();
     super.dispose();
@@ -84,6 +95,7 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
     });
     if (widget.embedded) {
       widget.onEmbeddedAdjustingChanged?.call(true);
+      widget.onEmbeddedAdjustPickupModeChanged?.call(mode == _BookingPanelMode.adjustPickup);
       if (_mapCenter != null) {
         widget.onEmbeddedAdjustTargetChanged?.call(_mapCenter!);
       }
@@ -96,6 +108,7 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
     }
     if (widget.embedded) {
       widget.onEmbeddedAdjustingChanged?.call(false);
+      widget.onEmbeddedAdjustPickupModeChanged?.call(null);
     }
   }
 
@@ -263,6 +276,27 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
           final hasDestination = destinationLat != null && destinationLng != null;
           final pickupPoint = hasPickup ? LatLng(pickupLat, pickupLng) : null;
           final destinationPoint = hasDestination ? LatLng(destinationLat, destinationLng) : null;
+
+          if (widget.embedded) {
+            if (_lastReportedEmbeddedPickup != pickupPoint) {
+              _lastReportedEmbeddedPickup = pickupPoint;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) {
+                  return;
+                }
+                widget.onEmbeddedPickupPointChanged?.call(pickupPoint);
+              });
+            }
+            if (_lastReportedEmbeddedDestination != destinationPoint) {
+              _lastReportedEmbeddedDestination = destinationPoint;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) {
+                  return;
+                }
+                widget.onEmbeddedDestinationPointChanged?.call(destinationPoint);
+              });
+            }
+          }
           final isAdjusting = _panelMode != _BookingPanelMode.details;
           final adjustMode = _panelMode == _BookingPanelMode.adjustPickup
               ? LocationEditMode.pickup
@@ -294,6 +328,22 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
                 markerId: const MarkerId('destination'),
                 position: destinationPoint,
                 infoWindow: InfoWindow(title: destinationName),
+              ),
+            if (isAdjusting)
+              Marker(
+                markerId: const MarkerId('adjust_pin'),
+                position: adjustTarget,
+                draggable: true,
+                onDragEnd: (position) {
+                  if (!mounted) {
+                    return;
+                  }
+                  setState(() {
+                    _mapCenter = position;
+                    _selectedLat = position.latitude;
+                    _selectedLng = position.longitude;
+                  });
+                },
               ),
           };
           final polylines = <Polyline>{
@@ -374,7 +424,7 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
                       ),
                       markers: markers,
                       polylines: polylines,
-                      cloudMapId: consoleCloudMapId,
+                      style: fareMapStyle,
                       onMapCreated: (controller) {
                         _mapController = controller;
                       },
@@ -392,18 +442,24 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
                               _selectedLat = _mapCenter!.latitude;
                               _selectedLng = _mapCenter!.longitude;
                             },
+                      onTap: _panelMode == _BookingPanelMode.details
+                          ? null
+                          : (position) {
+                              if (!mounted) {
+                                return;
+                              }
+                              setState(() {
+                                _mapCenter = position;
+                                _selectedLat = position.latitude;
+                                _selectedLng = position.longitude;
+                              });
+                            },
                       myLocationButtonEnabled: false,
                       zoomControlsEnabled: false,
                       mapToolbarEnabled: false,
                       compassEnabled: false,
                       tiltGesturesEnabled: false,
                     ),
-                  ),
-                ),
-              if (!widget.embedded && _panelMode != _BookingPanelMode.details)
-                const IgnorePointer(
-                  child: Center(
-                    child: Icon(Icons.location_on, color: Colors.redAccent, size: 36),
                   ),
                 ),
               if (!widget.embedded && !isAdjusting)
@@ -464,12 +520,32 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
                             ? MediaQuery.of(context).padding.bottom + r.space(10)
                             : r.space(10),
                       ),
-                      child: isAdjusting
-                          ? _buildAdjustPanel(r, adjustTitle, adjustMode)
-                          : Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
+                      child: AnimatedSwitcher(
+                          duration: kAppMotion.switcher,
+                          switchInCurve: Curves.easeInOutCubic,
+                          switchOutCurve: Curves.easeInOutCubic,
+                          transitionBuilder: (child, animation) {
+                            final offset = Tween<Offset>(
+                              begin: const Offset(0, 0.04),
+                              end: Offset.zero,
+                            ).animate(animation);
+                            return FadeTransition(
+                              opacity: animation,
+                              child: SlideTransition(position: offset, child: child),
+                            );
+                          },
+                          child: KeyedSubtree(
+                            key: ValueKey<bool>(isAdjusting),
+                            child: isAdjusting
+                          ? SingleChildScrollView(
+                            child: _buildAdjustPanel(r, adjustTitle, adjustMode),
+                          )
+                          : (widget.embedded
+                              ? SingleChildScrollView(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
                           Row(
                             children: [
                               Text(
@@ -782,6 +858,323 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
                           ),
                         ],
                       ),
+                                )
+                              : Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                          Row(
+                            children: [
+                              Text(
+                                etaText,
+                                style: TextStyle(color: Colors.white, fontSize: r.font(14), fontWeight: FontWeight.w700),
+                              ),
+                              SizedBox(width: r.space(8)),
+                              Text(
+                                distanceText,
+                                style: TextStyle(color: Colors.white70, fontSize: r.font(11)),
+                              ),
+                              const Spacer(),
+                              IconButton(
+                                onPressed: _closeBookingView,
+                                icon: Icon(Icons.close, color: Colors.white70, size: r.icon(16)),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: r.space(2)),
+                          Text(routeSummary, style: TextStyle(color: Colors.white54, fontSize: r.font(10))),
+                          SizedBox(height: widget.embedded ? r.space(8) : r.space(10)),
+                          Container(
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF202020),
+                              borderRadius: BorderRadius.circular(r.radius(12)),
+                              border: Border.all(color: Colors.white12),
+                            ),
+                            child: Padding(
+                              padding: EdgeInsets.only(
+                                left: r.space(12),
+                                right: r.space(12),
+                                top: widget.embedded ? r.space(10) : r.space(12),
+                                bottom: widget.embedded ? r.space(10) : r.space(12),
+                              ),
+                              child: Column(
+                                children: [
+                                  buildStopRow(
+                                    label: 'Pickup',
+                                    name: pickupName,
+                                    onTap: () => _openLocationEditor(
+                                      panelMode: _BookingPanelMode.adjustPickup,
+                                      currentName: pickupName,
+                                      currentLat: (pickup['lat'] as num?)?.toDouble(),
+                                      currentLng: (pickup['lng'] as num?)?.toDouble(),
+                                      fallback: fallbackTarget,
+                                    ),
+                                  ),
+                                  SizedBox(height: r.space(10)),
+                                  buildStopRow(
+                                    label: 'Destination',
+                                    name: destinationName,
+                                    onTap: () => _openLocationEditor(
+                                      panelMode: _BookingPanelMode.adjustDestination,
+                                      currentName: destinationName,
+                                      currentLat: (destination['lat'] as num?)?.toDouble(),
+                                      currentLng: (destination['lng'] as num?)?.toDouble(),
+                                      fallback: fallbackTarget,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          SizedBox(height: widget.embedded ? r.space(8) : r.space(10)),
+                          Row(
+                            children: [
+                              Text('Passengers', style: TextStyle(color: Colors.white70, fontSize: r.font(11), fontWeight: FontWeight.w600)),
+                              const Spacer(),
+                              InkWell(
+                                onTap: canDecrease
+                                    ? () async {
+                                          final newCount = displayPassengers - 1;
+                                          setState(() {
+                                            _passengersOverride = newCount;
+                                          });
+                                          await RideMatchingService().updatePassengers(
+                                            requestId: widget.requestId!,
+                                            passengers: newCount,
+                                          );
+                                        }
+                                    : null,
+                                borderRadius: BorderRadius.circular(8),
+                                child: Container(
+                                  width: r.space(26),
+                                  height: r.space(26),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF262626),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: Colors.white12),
+                                  ),
+                                  child: Icon(
+                                    Icons.remove,
+                                    color: canDecrease ? Colors.white54 : Colors.white24,
+                                    size: r.icon(14),
+                                  ),
+                                ),
+                              ),
+                              SizedBox(width: r.space(8)),
+                              Text(
+                                '$displayPassengers',
+                                style: TextStyle(color: Colors.white, fontSize: r.font(12), fontWeight: FontWeight.w600),
+                              ),
+                              SizedBox(width: r.space(8)),
+                              InkWell(
+                                onTap: canIncrease
+                                    ? () async {
+                                          final newCount = displayPassengers + 1;
+                                          setState(() {
+                                            _passengersOverride = newCount;
+                                          });
+                                          await RideMatchingService().updatePassengers(
+                                            requestId: widget.requestId!,
+                                            passengers: newCount,
+                                          );
+                                        }
+                                    : null,
+                                borderRadius: BorderRadius.circular(8),
+                                child: Container(
+                                  width: r.space(26),
+                                  height: r.space(26),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF262626),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: Colors.white12),
+                                  ),
+                                  child: Icon(
+                                    Icons.add,
+                                    color: canIncrease ? Colors.white54 : Colors.white24,
+                                    size: r.icon(14),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: widget.embedded ? r.space(8) : r.space(10)),
+                          Row(
+                            children: [
+                              InkWell(
+                                onTap: () {
+                                  double? customFare;
+                                  showDialog(
+                                    context: context,
+                                    builder: (context) => Dialog(
+                                      backgroundColor: const Color(0xFF1A1A1A),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(r.radius(16)),
+                                      ),
+                                      child: Padding(
+                                        padding: EdgeInsets.only(left: r.space(16), right: r.space(16), top: r.space(16)),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Text(
+                                                  'Price',
+                                                  style: TextStyle(
+                                                    color: Colors.white70,
+                                                    fontSize: r.font(13),
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                                IconButton(
+                                                  padding: EdgeInsets.zero,
+                                                  constraints: const BoxConstraints(),
+                                                  icon: Icon(Icons.close, color: Colors.white54, size: r.icon(16)),
+                                                  onPressed: () => Navigator.pop(context),
+                                                ),
+                                              ],
+                                            ),
+                                            SizedBox(height: r.space(12)),
+                                            TextField(
+                                              style: TextStyle(color: Colors.white, fontSize: r.font(12)),
+                                              decoration: InputDecoration(
+                                                hintText: 'Enter Amount...',
+                                                hintStyle: TextStyle(color: Colors.white38, fontSize: r.font(12)),
+                                                filled: true,
+                                                fillColor: const Color(0xFF262626),
+                                                border: OutlineInputBorder(
+                                                  borderRadius: BorderRadius.circular(r.radius(8)),
+                                                  borderSide: const BorderSide(color: Colors.white12),
+                                                ),
+                                                enabledBorder: OutlineInputBorder(
+                                                  borderRadius: BorderRadius.circular(r.radius(8)),
+                                                  borderSide: const BorderSide(color: Colors.white12),
+                                                ),
+                                                focusedBorder: OutlineInputBorder(
+                                                  borderRadius: BorderRadius.circular(r.radius(8)),
+                                                  borderSide: const BorderSide(color: Colors.white38),
+                                                ),
+                                                contentPadding: EdgeInsets.only(
+                                                  left: r.space(12),
+                                                  right: r.space(12),
+                                                  top: r.space(10),
+                                                ),
+                                              ),
+                                              onChanged: (value) {
+                                                customFare = double.tryParse(value);
+                                              },
+                                            ),
+                                            SizedBox(height: r.space(12)),
+                                            Text(
+                                              'Know fare est dispatch ideal from time',
+                                              style: TextStyle(
+                                                color: Colors.white54,
+                                                fontSize: r.font(10),
+                                              ),
+                                            ),
+                                            SizedBox(height: r.space(12)),
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                              children: [
+                                                _buildFareOption(r, 50.0),
+                                                _buildFareOption(r, 60.0),
+                                                _buildFareOption(r, 70.0),
+                                              ],
+                                            ),
+                                            SizedBox(height: r.space(16)),
+                                            SizedBox(
+                                              width: double.infinity,
+                                              height: r.space(44),
+                                              child: ElevatedButton(
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor: const Color(0xFF3A3A3C),
+                                                  foregroundColor: Colors.white,
+                                                  shape: RoundedRectangleBorder(
+                                                    borderRadius: BorderRadius.circular(r.radius(10)),
+                                                  ),
+                                                ),
+                                                onPressed: () async {
+                                                  if (customFare != null && customFare! > 0) {
+                                                    await RideMatchingService().updateFare(
+                                                      requestId: widget.requestId!,
+                                                      fare: customFare!,
+                                                    );
+                                                    if (!context.mounted) {
+                                                      return;
+                                                    }
+                                                    Navigator.pop(context);
+                                                  } else {
+                                                    return;
+                                                  }
+                                                },
+                                                child: const Text('Confirm'),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                                borderRadius: BorderRadius.circular(r.radius(8)),
+                                child: Padding(
+                                  padding: EdgeInsets.only(top: r.space(2)),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '₱ ${fare.toStringAsFixed(2)}',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: r.font(16),
+                                        ),
+                                      ),
+                                      SizedBox(height: r.space(2)),
+                                      Text(
+                                        'Tap to change',
+                                        style: TextStyle(
+                                          color: Colors.blueAccent,
+                                          fontSize: r.font(11),
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const Spacer(),
+                              SizedBox(
+                                width: widget.embedded ? r.space(116) : null,
+                                height: r.space(36),
+                                child: ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: status == 'searching'
+                                        ? const Color(0xFF2C2C2E)
+                                        : const Color(0xFF3A3A3C),
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(r.radius(12)),
+                                    ),
+                                  ),
+                                  onPressed: status == 'searching'
+                                      ? () async {
+                                          if (widget.requestId == null) {
+                                            return;
+                                          }
+                                          await RideMatchingService().acceptRideRequest(widget.requestId!);
+                                        }
+                                      : null,
+                                  child: Text(status == 'assigned' ? 'Confirmed' : 'Book'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      )))),
                     ),
                   ),
                 ),
@@ -844,6 +1237,9 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
   }
 
   Widget _buildAdjustPanel(Responsive r, String title, LocationEditMode mode) {
+    final verticalGap = widget.embedded ? r.space(8) : r.space(12);
+    final actionHeight = widget.embedded ? r.space(36) : r.space(40);
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -866,14 +1262,14 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
         SizedBox(height: r.space(12)),
         Text(
           widget.embedded
-              ? 'Move the map to the exact point and confirm.'
-              : 'Zoom and pan in the map, then confirm the center point.',
+              ? 'Drag or tap the pin on the map, then confirm.'
+              : 'Drag the pin to the exact point or tap the map, then confirm.',
           style: TextStyle(color: Colors.white54, fontSize: r.font(10)),
         ),
-        SizedBox(height: r.space(12)),
+        SizedBox(height: verticalGap),
         SizedBox(
           width: double.infinity,
-          height: r.space(40),
+          height: actionHeight,
           child: ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF3A3A3C),

@@ -113,7 +113,7 @@ class _LocationMapSelectionScreenState extends State<LocationMapSelectionScreen>
                     target: _mapCenter,
                     zoom: 15,
                   ),
-                  cloudMapId: consoleCloudMapId,
+                  style: fareMapStyle,
                   onMapCreated: (controller) {
                     _mapController = controller;
                   },

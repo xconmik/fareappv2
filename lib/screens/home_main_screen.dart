@@ -1,10 +1,17 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
 
+import '../config/app_config.dart';
 import 'category_with_places.dart';
 import '../models/category_place_models.dart';
 import '../theme/motion_presets.dart';
@@ -30,7 +37,7 @@ class _HomeMainScreenState extends State<HomeMainScreen>
   GoogleMapController? _mapController;
   bool _hasLocationPermission = false;
   final bool _showMap = true;
-  static const bool _useMapId = true;
+  static const bool _useMapId = false;
   static const String _cloudMapId = '5c554f4f892ef6db87f0d2c1';
   bool _mapFailed = false;
   static final Duration _animDuration = kAppMotion.sheet;
@@ -38,6 +45,7 @@ class _HomeMainScreenState extends State<HomeMainScreen>
   static const Curve _animCurve = Curves.easeInOutCubicEmphasized;
   static const Curve _collapseAnimCurve = Curves.easeOutCubic;
   static const double _minSheetSize = 0.26;
+  static const double _adjustSheetSize = 0.42;
   static const double _maxSheetSize = 0.95;
   static const double _categoryRevealThreshold = 0.75;
   static const double _categoryCollapseThreshold = 0.70;
@@ -46,6 +54,15 @@ class _HomeMainScreenState extends State<HomeMainScreen>
   bool _isBookingVisible = false;
   bool _isEmbeddedAdjusting = false;
   LatLng? _embeddedAdjustPin;
+  LatLng? _embeddedPickupPoint;
+  LatLng? _embeddedDestinationPoint;
+  bool? _embeddedAdjustingPickup;
+  String? _directionsApiKey;
+  List<LatLng> _routePoints = const [];
+  LatLng? _vehicleMarkerPosition;
+  int _vehicleAnimationRunId = 0;
+  LatLng? _lastRouteOrigin;
+  LatLng? _lastRouteDestination;
   LatLng _latestMapCenter = const LatLng(12.8797, 121.7740);
   String _userName = 'there';
   String _searchQuery = '';
@@ -157,11 +174,13 @@ class _HomeMainScreenState extends State<HomeMainScreen>
     super.initState();
     _getUserName();
     _initLocation();
+    _initDirectionsApiKey();
     _draggableSheetController.addListener(_onSheetDragged);
   }
 
   @override
   void dispose() {
+    _vehicleAnimationRunId++;
     _draggableSheetController.removeListener(_onSheetDragged);
     _categoryScrollController.dispose();
     _searchController.dispose();
@@ -169,8 +188,198 @@ class _HomeMainScreenState extends State<HomeMainScreen>
     super.dispose();
   }
 
+  Future<void> _initDirectionsApiKey() async {
+    try {
+      final apiKey = (await AppConfig.getGoogleMapsApiKey()).trim();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _directionsApiKey = apiKey.isNotEmpty ? apiKey : null;
+      });
+      _refreshRouteForPickupDestination();
+    } catch (_) {
+      // Keep map usable even if key fetch fails.
+    }
+  }
+
+  Future<List<LatLng>> fetchRouteFromApi(LatLng origin, LatLng destination) async {
+    var apiKey = _directionsApiKey;
+    if (apiKey == null || apiKey.isEmpty) {
+      apiKey = (await AppConfig.getGoogleMapsApiKey()).trim();
+      if (apiKey.isNotEmpty && mounted) {
+        setState(() {
+          _directionsApiKey = apiKey;
+        });
+      }
+    }
+
+    if (apiKey == null || apiKey.isEmpty) {
+      return const [];
+    }
+
+    final uri = Uri.https(
+      'maps.googleapis.com',
+      '/maps/api/directions/json',
+      {
+        'origin': '${origin.latitude},${origin.longitude}',
+        'destination': '${destination.latitude},${destination.longitude}',
+        'mode': 'driving',
+        'key': apiKey,
+      },
+    );
+
+    final response = await http.get(uri);
+    if (response.statusCode != 200) {
+      return const [];
+    }
+
+    final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    if ((payload['status'] as String?) != 'OK') {
+      return const [];
+    }
+
+    final routes = payload['routes'] as List<dynamic>?;
+    if (routes == null || routes.isEmpty) {
+      return const [];
+    }
+
+    final route = routes.first as Map<String, dynamic>;
+    final pointsEncoded =
+        (route['overview_polyline'] as Map<String, dynamic>?)?['points'] as String?;
+    if (pointsEncoded == null || pointsEncoded.isEmpty) {
+      return const [];
+    }
+
+    final decoded = PolylinePoints().decodePolyline(pointsEncoded);
+    return decoded
+        .map((point) => LatLng(point.latitude, point.longitude))
+        .toList(growable: false);
+  }
+
+  void drawRoute(List<LatLng> routePoints) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _routePoints = routePoints;
+      _vehicleMarkerPosition = routePoints.isNotEmpty ? routePoints.first : null;
+    });
+  }
+
+  Future<void> animateVehicleAlongRoute(List<LatLng> routePoints) async {
+    if (routePoints.length < 2 || !mounted) {
+      return;
+    }
+
+    final runId = ++_vehicleAnimationRunId;
+    const frameDelay = Duration(milliseconds: 28);
+
+    for (var i = 0; i < routePoints.length - 1; i++) {
+      if (!mounted || runId != _vehicleAnimationRunId) {
+        return;
+      }
+
+      final start = routePoints[i];
+      final end = routePoints[i + 1];
+      const steps = 12;
+      for (var step = 0; step <= steps; step++) {
+        if (!mounted || runId != _vehicleAnimationRunId) {
+          return;
+        }
+
+        final t = step / steps;
+        final position = LatLng(
+          start.latitude + (end.latitude - start.latitude) * t,
+          start.longitude + (end.longitude - start.longitude) * t,
+        );
+
+        setState(() {
+          _vehicleMarkerPosition = position;
+        });
+
+        await Future.delayed(frameDelay);
+      }
+    }
+  }
+
+  void fitCameraToRouteBounds(List<LatLng> routePoints) {
+    if (routePoints.isEmpty || _mapController == null) {
+      return;
+    }
+
+    var minLat = routePoints.first.latitude;
+    var maxLat = routePoints.first.latitude;
+    var minLng = routePoints.first.longitude;
+    var maxLng = routePoints.first.longitude;
+
+    for (final point in routePoints) {
+      if (point.latitude < minLat) minLat = point.latitude;
+      if (point.latitude > maxLat) maxLat = point.latitude;
+      if (point.longitude < minLng) minLng = point.longitude;
+      if (point.longitude > maxLng) maxLng = point.longitude;
+    }
+
+    final bounds = LatLngBounds(
+      southwest: LatLng(minLat, minLng),
+      northeast: LatLng(maxLat, maxLng),
+    );
+
+    _mapController!.animateCamera(CameraUpdate.newLatLngBounds(bounds, 72));
+  }
+
+  Future<void> _refreshRouteForPickupDestination() async {
+    final origin = _embeddedPickupPoint;
+    final destination = _embeddedDestinationPoint;
+
+    if (!_isBookingVisible || origin == null || destination == null) {
+      _vehicleAnimationRunId++;
+      if (_routePoints.isNotEmpty || _vehicleMarkerPosition != null) {
+        setState(() {
+          _routePoints = const [];
+          _vehicleMarkerPosition = null;
+        });
+      }
+      _lastRouteOrigin = null;
+      _lastRouteDestination = null;
+      return;
+    }
+
+    if (_lastRouteOrigin == origin && _lastRouteDestination == destination) {
+      return;
+    }
+
+    _lastRouteOrigin = origin;
+    _lastRouteDestination = destination;
+
+    final routePoints = await fetchRouteFromApi(origin, destination);
+    if (!mounted) {
+      return;
+    }
+
+    if (routePoints.isEmpty) {
+      setState(() {
+        _routePoints = [origin, destination];
+        _vehicleMarkerPosition = origin;
+      });
+      return;
+    }
+
+    drawRoute(routePoints);
+    fitCameraToRouteBounds(routePoints);
+    unawaited(animateVehicleAlongRoute(routePoints));
+  }
+
   void _onSheetDragged() {
     if (_isAutoCollapsingSheet || !_draggableSheetController.isAttached) {
+      return;
+    }
+
+    if (_isEmbeddedAdjusting) {
+      final currentSize = _draggableSheetController.size;
+      if (currentSize > _minSheetSize + 0.01) {
+        _snapToCollapsed();
+      }
       return;
     }
 
@@ -204,6 +413,23 @@ class _HomeMainScreenState extends State<HomeMainScreen>
     try {
       await _draggableSheetController.animateTo(
         _minSheetSize,
+        duration: _collapseAnimDuration,
+        curve: _collapseAnimCurve,
+      );
+    } finally {
+      _isAutoCollapsingSheet = false;
+    }
+  }
+
+  Future<void> _snapToAdjustSheet() async {
+    if (!_draggableSheetController.isAttached) {
+      return;
+    }
+
+    _isAutoCollapsingSheet = true;
+    try {
+      await _draggableSheetController.animateTo(
+        _adjustSheetSize,
         duration: _collapseAnimDuration,
         curve: _collapseAnimCurve,
       );
@@ -388,11 +614,30 @@ class _HomeMainScreenState extends State<HomeMainScreen>
 
   Widget _buildLiveMap() {
     final markers = <Marker>{
+      if (_embeddedPickupPoint != null && !(_isEmbeddedAdjusting && _embeddedAdjustingPickup == true))
+        Marker(
+          markerId: const MarkerId('embedded_pickup_pin'),
+          position: _embeddedPickupPoint!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+          infoWindow: const InfoWindow(title: 'Pickup'),
+        ),
+      if (_embeddedDestinationPoint != null && !(_isEmbeddedAdjusting && _embeddedAdjustingPickup == false))
+        Marker(
+          markerId: const MarkerId('embedded_destination_pin'),
+          position: _embeddedDestinationPoint!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          infoWindow: const InfoWindow(title: 'Destination'),
+        ),
       if (_isEmbeddedAdjusting && _embeddedAdjustPin != null)
         Marker(
           markerId: const MarkerId('embedded_adjust_pin'),
           position: _embeddedAdjustPin!,
           draggable: true,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            _embeddedAdjustingPickup == true
+                ? BitmapDescriptor.hueGreen
+                : BitmapDescriptor.hueRed,
+          ),
           onDragEnd: (position) {
             if (!mounted) {
               return;
@@ -402,6 +647,23 @@ class _HomeMainScreenState extends State<HomeMainScreen>
               _latestMapCenter = position;
             });
           },
+        ),
+      if (_vehicleMarkerPosition != null)
+        Marker(
+          markerId: const MarkerId('embedded_vehicle_pin'),
+          position: _vehicleMarkerPosition!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          infoWindow: const InfoWindow(title: 'Vehicle'),
+        ),
+    };
+
+    final polylines = <Polyline>{
+      if (_routePoints.length >= 2)
+        Polyline(
+          polylineId: const PolylineId('embedded_route'),
+          points: _routePoints,
+          color: Colors.white.withValues(alpha: 0.8),
+          width: 5,
         ),
     };
 
@@ -430,7 +692,13 @@ class _HomeMainScreenState extends State<HomeMainScreen>
               });
             }
           : null,
+      gestureRecognizers: _isEmbeddedAdjusting
+          ? <Factory<OneSequenceGestureRecognizer>>{
+              Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
+            }
+          : <Factory<OneSequenceGestureRecognizer>>{},
       markers: markers,
+      polylines: polylines,
       zoomControlsEnabled: false,
       myLocationButtonEnabled: true,
       myLocationEnabled: _hasLocationPermission,
@@ -483,21 +751,10 @@ class _HomeMainScreenState extends State<HomeMainScreen>
       return;
     }
 
-    final desiredSize = _categoryRevealThreshold + 0.01;
-    if (_draggableSheetController.size <= desiredSize) {
+    if (_draggableSheetController.size <= _adjustSheetSize + 0.005) {
       return;
     }
-
-    _isAutoCollapsingSheet = true;
-    try {
-      await _draggableSheetController.animateTo(
-        desiredSize,
-        duration: _collapseAnimDuration,
-        curve: _collapseAnimCurve,
-      );
-    } finally {
-      _isAutoCollapsingSheet = false;
-    }
+    await _snapToAdjustSheet();
   }
 
   Widget _buildMapPlaceholder() {
@@ -1007,6 +1264,32 @@ class _HomeMainScreenState extends State<HomeMainScreen>
               onEmbeddedAdjustTargetChanged: (target) {
                 _focusMapForEmbeddedAdjust(target);
               },
+              onEmbeddedPickupPointChanged: (pickupPoint) {
+                if (!mounted || _embeddedPickupPoint == pickupPoint) {
+                  return;
+                }
+                setState(() {
+                  _embeddedPickupPoint = pickupPoint;
+                });
+                _refreshRouteForPickupDestination();
+              },
+              onEmbeddedDestinationPointChanged: (destinationPoint) {
+                if (!mounted || _embeddedDestinationPoint == destinationPoint) {
+                  return;
+                }
+                setState(() {
+                  _embeddedDestinationPoint = destinationPoint;
+                });
+                _refreshRouteForPickupDestination();
+              },
+              onEmbeddedAdjustPickupModeChanged: (isPickupMode) {
+                if (!mounted || _embeddedAdjustingPickup == isPickupMode) {
+                  return;
+                }
+                setState(() {
+                  _embeddedAdjustingPickup = isPickupMode;
+                });
+              },
               onEmbeddedAdjustingChanged: (isAdjusting) {
                 if (!mounted || _isEmbeddedAdjusting == isAdjusting) {
                   return;
@@ -1015,8 +1298,12 @@ class _HomeMainScreenState extends State<HomeMainScreen>
                   _isEmbeddedAdjusting = isAdjusting;
                   if (!isAdjusting) {
                     _embeddedAdjustPin = null;
+                    _embeddedAdjustingPickup = null;
                   }
                 });
+                if (isAdjusting) {
+                  _snapToAdjustSheet();
+                }
               },
               onBookingVisibilityChanged: (isVisible) {
                 if (_isBookingVisible == isVisible || !mounted) {
@@ -1024,6 +1311,17 @@ class _HomeMainScreenState extends State<HomeMainScreen>
                 }
                 setState(() {
                   _isBookingVisible = isVisible;
+                  if (!isVisible) {
+                    _vehicleAnimationRunId++;
+                    _embeddedAdjustPin = null;
+                    _embeddedPickupPoint = null;
+                    _embeddedDestinationPoint = null;
+                    _embeddedAdjustingPickup = null;
+                    _routePoints = const [];
+                    _vehicleMarkerPosition = null;
+                    _lastRouteOrigin = null;
+                    _lastRouteDestination = null;
+                  }
                 });
               },
             ),
@@ -1075,14 +1373,16 @@ class _HomeMainScreenState extends State<HomeMainScreen>
             alignment: Alignment.bottomCenter,
             child: DraggableScrollableSheet(
               controller: _draggableSheetController,
-              initialChildSize: _minSheetSize,
-              minChildSize: _minSheetSize,
-              maxChildSize: _maxSheetSize,
-              snap: true,
+              initialChildSize: _isEmbeddedAdjusting ? _adjustSheetSize : _minSheetSize,
+              minChildSize: _isEmbeddedAdjusting ? _adjustSheetSize : _minSheetSize,
+              maxChildSize: _isEmbeddedAdjusting ? _adjustSheetSize : _maxSheetSize,
+              snap: !_isEmbeddedAdjusting,
               snapAnimationDuration: _collapseAnimDuration,
-              snapSizes: const [_minSheetSize, _maxSheetSize],
+              snapSizes: _isEmbeddedAdjusting
+                  ? const [_adjustSheetSize]
+                  : const [_minSheetSize, _maxSheetSize],
               builder: (context, controller) {
-                if (_isCategoryExpanded) {
+                if (_isCategoryExpanded || _isBookingVisible || _isEmbeddedAdjusting) {
                   return _buildExpandedSheet(
                     grid,
                     searchHeight,

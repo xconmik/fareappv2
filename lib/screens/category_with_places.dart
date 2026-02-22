@@ -26,6 +26,9 @@ class CategoryWithPlacesScreen extends StatefulWidget {
     this.embeddedMapCenterProvider,
     this.onEmbeddedAdjustingChanged,
     this.onEmbeddedAdjustTargetChanged,
+    this.onEmbeddedPickupPointChanged,
+    this.onEmbeddedDestinationPointChanged,
+    this.onEmbeddedAdjustPickupModeChanged,
   });
 
   final int initialCategoryIndex;
@@ -38,6 +41,9 @@ class CategoryWithPlacesScreen extends StatefulWidget {
   final Future<LatLng?> Function()? embeddedMapCenterProvider;
   final ValueChanged<bool>? onEmbeddedAdjustingChanged;
   final ValueChanged<LatLng>? onEmbeddedAdjustTargetChanged;
+  final ValueChanged<LatLng?>? onEmbeddedPickupPointChanged;
+  final ValueChanged<LatLng?>? onEmbeddedDestinationPointChanged;
+  final ValueChanged<bool?>? onEmbeddedAdjustPickupModeChanged;
 
   @override
   State<CategoryWithPlacesScreen> createState() => _CategoryWithPlacesScreenState();
@@ -452,6 +458,9 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
                   embeddedMapCenterProvider: widget.embeddedMapCenterProvider,
                   onEmbeddedAdjustingChanged: widget.onEmbeddedAdjustingChanged,
                   onEmbeddedAdjustTargetChanged: widget.onEmbeddedAdjustTargetChanged,
+                  onEmbeddedPickupPointChanged: widget.onEmbeddedPickupPointChanged,
+                  onEmbeddedDestinationPointChanged: widget.onEmbeddedDestinationPointChanged,
+                  onEmbeddedAdjustPickupModeChanged: widget.onEmbeddedAdjustPickupModeChanged,
                 ),
         ),
       ),
@@ -1364,32 +1373,78 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
                       textAlign: TextAlign.center,
                     ),
                   )
-                : ListView.separated(
-                    controller: listController,
-                    itemCount: places.length + 1,
-                    separatorBuilder: (context, index) => SizedBox(height: r.space(10)),
-                    itemBuilder: (context, index) {
-                      if (index == places.length) {
-                        return TextButton(
+                : Builder(
+                    builder: (context) {
+                      final cabanatuanPlaces = places.where(_isCabanatuanPlace).toList(growable: false);
+                      final otherPlaces = places.where((place) => !_isCabanatuanPlace(place)).toList(growable: false);
+                      final showSections = cabanatuanPlaces.isNotEmpty && otherPlaces.isNotEmpty;
+
+                      final children = <Widget>[];
+
+                      void addPlaces(List<PlaceModel> sectionPlaces) {
+                        for (var i = 0; i < sectionPlaces.length; i++) {
+                          final place = sectionPlaces[i];
+                          children.add(
+                            _PlaceTile(
+                              title: place.title,
+                              subtitle: place.subtitle,
+                              distance: place.distance,
+                              status: place.status,
+                              onTap: () => _handlePlaceSelected(place),
+                            ),
+                          );
+                          if (i < sectionPlaces.length - 1) {
+                            children.add(SizedBox(height: r.space(10)));
+                          }
+                        }
+                      }
+
+                      if (showSections) {
+                        children.add(_buildPlacesSectionHeader(r, 'Cabanatuan'));
+                        children.add(SizedBox(height: r.space(8)));
+                        addPlaces(cabanatuanPlaces);
+                        children.add(SizedBox(height: r.space(14)));
+                        children.add(_buildPlacesSectionHeader(r, 'Outside of your area'));
+                        children.add(SizedBox(height: r.space(8)));
+                        addPlaces(otherPlaces);
+                      } else {
+                        addPlaces(places);
+                      }
+
+                      children.add(SizedBox(height: r.space(10)));
+                      children.add(
+                        TextButton(
                           style: TextButton.styleFrom(
                             foregroundColor: Colors.white70,
                             padding: EdgeInsets.symmetric(vertical: r.space(10)),
                           ),
                           onPressed: _openInlineMapPicker,
                           child: Text('Choose on map', style: TextStyle(fontSize: r.font(12))),
-                        );
-                      }
+                        ),
+                      );
 
-                      final place = places[index];
-                      return _PlaceTile(
-                        title: place.title,
-                        subtitle: place.subtitle,
-                        distance: place.distance,
-                        status: place.status,
-                        onTap: () => _handlePlaceSelected(place),
+                      return ListView(
+                        controller: listController,
+                        children: children,
                       );
                     },
                   ),
+      ),
+    );
+  }
+
+  bool _isCabanatuanPlace(PlaceModel place) {
+    final searchable = '${place.title} ${place.subtitle}'.toLowerCase();
+    return searchable.contains('cabanatuan');
+  }
+
+  Widget _buildPlacesSectionHeader(Responsive r, String label) {
+    return Text(
+      label,
+      style: TextStyle(
+        color: Colors.white70,
+        fontSize: r.font(11),
+        fontWeight: FontWeight.w700,
       ),
     );
   }
@@ -1864,7 +1919,7 @@ class _PlaceTile extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.right,
                         style: TextStyle(
-                          color: isOpen ? const Color(0xFFE2C26D) : Colors.white38,
+                          color: isOpen ? Colors.white : Colors.white38,
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
                         ),

@@ -81,20 +81,20 @@ class MotionPresets {
   );
 }
 
-const MotionProfile kAppMotion = kMotion500Animation300Transition;
+const int kAppAnimationMs = 600;
+const Duration kAppAnimationDuration = Duration(milliseconds: kAppAnimationMs);
 
-// Split timing profile: 500ms for movement/shape animations, 300ms for transitions/fades.
-const MotionProfile kMotion500Animation300Transition = MotionProfile(
-  sheet: Duration(milliseconds: 500),
-  sheetCollapse: Duration(milliseconds: 300),
-  panelSlide: Duration(milliseconds: 500),
-  panelFade: Duration(milliseconds: 300),
-  bookingSlide: Duration(milliseconds: 500),
-  bookingFade: Duration(milliseconds: 300),
-  overlaySlide: Duration(milliseconds: 500),
-  overlayFade: Duration(milliseconds: 300),
-  switcher: Duration(milliseconds: 500),
-  chipMorph: Duration(milliseconds: 500),
-  chipScale: Duration(milliseconds: 500),
-  chipFade: Duration(milliseconds: 300),
+const MotionProfile kAppMotion = MotionProfile(
+  sheet: kAppAnimationDuration,
+  sheetCollapse: kAppAnimationDuration,
+  panelSlide: kAppAnimationDuration,
+  panelFade: kAppAnimationDuration,
+  bookingSlide: kAppAnimationDuration,
+  bookingFade: kAppAnimationDuration,
+  overlaySlide: kAppAnimationDuration,
+  overlayFade: kAppAnimationDuration,
+  switcher: kAppAnimationDuration,
+  chipMorph: kAppAnimationDuration,
+  chipScale: kAppAnimationDuration,
+  chipFade: kAppAnimationDuration,
 );
