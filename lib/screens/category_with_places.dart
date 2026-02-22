@@ -9,19 +9,35 @@ import '../models/category_place_models.dart';
 import '../services/ride_matching_service.dart';
 import '../services/google_places_service.dart';
 import '../config/app_config.dart';
-import 'ride_status_screen.dart';
 import 'booking_details_screen.dart';
+import '../theme/motion_presets.dart';
 import '../theme/responsive.dart';
 
 class CategoryWithPlacesScreen extends StatefulWidget {
   const CategoryWithPlacesScreen({
-    Key? key,
+    super.key,
     this.initialCategoryIndex = 0,
     this.categories,
-  }) : super(key: key);
+    this.placesOnly = false,
+    this.placesScrollController,
+    this.externalSearchQuery,
+    this.externalSearchSubmitRequestId = 0,
+    this.onBookingVisibilityChanged,
+    this.embeddedMapCenterProvider,
+    this.onEmbeddedAdjustingChanged,
+    this.onEmbeddedAdjustTargetChanged,
+  });
 
   final int initialCategoryIndex;
   final List<CategoryModel>? categories;
+  final bool placesOnly;
+  final ScrollController? placesScrollController;
+  final String? externalSearchQuery;
+  final int externalSearchSubmitRequestId;
+  final ValueChanged<bool>? onBookingVisibilityChanged;
+  final Future<LatLng?> Function()? embeddedMapCenterProvider;
+  final ValueChanged<bool>? onEmbeddedAdjustingChanged;
+  final ValueChanged<LatLng>? onEmbeddedAdjustTargetChanged;
 
   @override
   State<CategoryWithPlacesScreen> createState() => _CategoryWithPlacesScreenState();
@@ -42,10 +58,160 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
   List<PlacePrediction> _autocompleteResults = [];
   List<PlaceModel> _recentSearches = [];
   List<PlaceModel> _dynamicPlaces = [];
+  final Map<String, List<PlaceModel>> _nearbyPlacesCache = {};
+  final Map<String, DateTime> _nearbyPlacesCacheTime = {};
+  final Set<String> _nearbyPrefetchInFlight = <String>{};
+  Timer? _searchDebounce;
+  Timer? _prefetchDebounce;
+  int _nearbyFetchToken = 0;
+  int _autocompleteFetchToken = 0;
+  String? _activeRequestId;
+  GoogleMapController? _pickerMapController;
+  LatLng _pickerMapCenter = const LatLng(14.5995, 120.9842);
+  bool _showMapPickerSheet = false;
   bool _showAutocomplete = false;
   bool _searchFocused = false;
   bool _loadingPlaces = false;
+  bool _loadingAutocomplete = false;
+  bool _showBookingSheet = false;
+  bool _bookingTransitioning = false;
   Position? _userLocation;
+
+  static const Duration _nearbyCacheTtl = Duration(minutes: 3);
+  static const Duration _autocompleteDebounce = Duration(milliseconds: 320);
+  static const Duration _prefetchDebounceDuration = Duration(milliseconds: 450);
+  static final Duration _bookingPanelShiftDuration = kAppMotion.panelSlide;
+
+  String _formatDistanceKm(double? latitude, double? longitude) {
+    if (_userLocation == null || latitude == null || longitude == null) {
+      return '';
+    }
+
+    final meters = Geolocator.distanceBetween(
+      _userLocation!.latitude,
+      _userLocation!.longitude,
+      latitude,
+      longitude,
+    );
+
+    final km = meters / 1000;
+    return '${km.toStringAsFixed(1)} km';
+  }
+
+  String _buildRatingDistance(double? rating, double? latitude, double? longitude) {
+    final ratingText = rating != null ? '★ ${rating.toStringAsFixed(1)}' : '';
+    final kmText = _formatDistanceKm(latitude, longitude);
+    if (ratingText.isNotEmpty && kmText.isNotEmpty) {
+      return '$ratingText · $kmText';
+    }
+    return ratingText.isNotEmpty ? ratingText : kmText;
+  }
+
+  String _removeStreetFromAddress(String? address) {
+    if (address == null) {
+      return '';
+    }
+
+    final trimmed = address.trim();
+    if (trimmed.isEmpty) {
+      return '';
+    }
+
+    final parts = trimmed
+        .split(',')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList(growable: false);
+
+    if (parts.length <= 1) {
+      return trimmed;
+    }
+
+    return parts.sublist(1).join(', ');
+  }
+
+  String _buildNearbyCacheKey(String categoryLabel) {
+    if (_userLocation == null) {
+      return 'no_loc|$categoryLabel';
+    }
+    final lat = (_userLocation!.latitude * 100).round() / 100;
+    final lng = (_userLocation!.longitude * 100).round() / 100;
+    return '$categoryLabel|$lat|$lng';
+  }
+
+  bool _isNearbyCacheFresh(String cacheKey) {
+    final cachedAt = _nearbyPlacesCacheTime[cacheKey];
+    if (cachedAt == null) {
+      return false;
+    }
+    return DateTime.now().difference(cachedAt) <= _nearbyCacheTtl;
+  }
+
+  void _schedulePrefetchNearbyAroundActiveCategory() {
+    _prefetchDebounce?.cancel();
+    _prefetchDebounce = Timer(_prefetchDebounceDuration, () {
+      _prefetchNearbyAroundActiveCategory();
+    });
+  }
+
+  void _prefetchNearbyAroundActiveCategory() {
+    if (_categories.isEmpty || _userLocation == null) {
+      return;
+    }
+
+    final candidates = <int>{
+      _activeCategoryIndex - 1,
+      _activeCategoryIndex + 1,
+      _activeCategoryIndex + 2,
+    };
+
+    for (final index in candidates) {
+      if (index < 0 || index >= _categories.length) {
+        continue;
+      }
+      _prefetchNearbyPlaces(_categories[index].label);
+    }
+  }
+
+  Future<void> _prefetchNearbyPlaces(String categoryLabel) async {
+    if (_userLocation == null) {
+      return;
+    }
+
+    final cacheKey = _buildNearbyCacheKey(categoryLabel);
+    if (_isNearbyCacheFresh(cacheKey) || _nearbyPrefetchInFlight.contains(cacheKey)) {
+      return;
+    }
+
+    _nearbyPrefetchInFlight.add(cacheKey);
+    try {
+      final keyword = categoryKeywords[categoryLabel] ?? categoryLabel.toLowerCase();
+      final results = await _placesService.searchNearbyPlaces(
+        latitude: _userLocation!.latitude,
+        longitude: _userLocation!.longitude,
+        keyword: keyword,
+        radius: 15000,
+      ).timeout(const Duration(seconds: 10));
+
+      final mappedPlaces = results
+          .map((r) => PlaceModel(
+                title: r.name,
+                subtitle: _removeStreetFromAddress(r.address),
+                status: r.openNow ? 'Open' : 'Closed',
+                distance: _buildRatingDistance(r.rating, r.latitude, r.longitude),
+                latitude: r.latitude,
+                longitude: r.longitude,
+              ))
+          .toList(growable: false);
+
+      _nearbyPlacesCache[cacheKey] = mappedPlaces;
+      _nearbyPlacesCacheTime[cacheKey] = DateTime.now();
+    } catch (_) {
+      // Ignore background prefetch failures.
+    } finally {
+      _nearbyPrefetchInFlight.remove(cacheKey);
+    }
+  }
   
   // Category to search keyword mapping
   static const Map<String, String> categoryKeywords = {
@@ -164,6 +330,17 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
 ]''';
 
   Future<void> _handlePlaceSelected(PlaceModel place) async {
+    if (_bookingTransitioning) {
+      return;
+    }
+
+    setState(() {
+      _bookingTransitioning = true;
+      _showBookingSheet = false;
+      _showAutocomplete = false;
+    });
+    widget.onBookingVisibilityChanged?.call(true);
+
     _addToRecents(place);
     
     // Show the place on map immediately
@@ -179,100 +356,205 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
     final markers = {marker};
     await _fitMarkers(markers);
     
-    // Give user time to see the location on map
-    await Future.delayed(const Duration(milliseconds: 800));
-    
     if (!mounted) {
       return;
     }
     
     // Extract distance as km
-    final distanceText = place.distance != null 
-      ? double.tryParse(place.distance!.replaceAll(' km', '')) 
-      : null;
+    final kmMatch = RegExp(r'([0-9]+(?:\.[0-9]+)?)\s*km', caseSensitive: false)
+      .firstMatch(place.distance);
+    final distanceText = kmMatch != null ? double.tryParse(kmMatch.group(1)!) : null;
     
-    final requestId = await RideMatchingService().createRideRequest(
-      pickupName: 'Current Location',
-      destinationName: place.title,
-      pickupLat: _userLocation?.latitude,
-      pickupLng: _userLocation?.longitude,
-      destinationLat: place.latitude,
-      destinationLng: place.longitude,
-      distanceKm: distanceText,
-      destinationStatus: place.status,
-    );
-    if (!mounted) {
-      return;
-    }
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => BookingDetailsScreen(requestId: requestId)),
-    );
-  }
-
-  Future<void> _fetchNearbyPlaces(String categoryLabel) async {
-    print('[Category] _fetchNearbyPlaces called for category: $categoryLabel');
-    
-    if (_userLocation == null) {
-      print('[Category] User location is null, waiting for location...');
+    String? requestId;
+    try {
+      requestId = await RideMatchingService().createRideRequest(
+        pickupName: 'Current Location',
+        destinationName: place.title,
+        pickupLat: _userLocation?.latitude,
+        pickupLng: _userLocation?.longitude,
+        destinationLat: place.latitude,
+        destinationLng: place.longitude,
+        distanceKm: distanceText,
+        destinationStatus: place.status,
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _bookingTransitioning = false;
+      });
+      widget.onBookingVisibilityChanged?.call(false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Getting your location...')),
+        SnackBar(content: Text('Unable to start booking: $error')),
       );
       return;
     }
 
-    print('[Category] User location: ${_userLocation!.latitude}, ${_userLocation!.longitude}');
+    if (!mounted) {
+      return;
+    }
 
     setState(() {
-      _loadingPlaces = true;
-      _dynamicPlaces = [];
+      _activeRequestId = requestId;
+      _bookingTransitioning = false;
+      _showBookingSheet = requestId != null;
     });
+    widget.onBookingVisibilityChanged?.call(_showBookingSheet);
+  }
+
+  void _closeInlineBooking() {
+    widget.onEmbeddedAdjustingChanged?.call(false);
+    setState(() {
+      _showBookingSheet = false;
+      _activeRequestId = null;
+      _bookingTransitioning = false;
+    });
+    widget.onBookingVisibilityChanged?.call(false);
+  }
+
+  Widget _buildTransitioningCategoryContent({
+    required Widget child,
+  }) {
+    final hideCategoryContent = _bookingTransitioning || _showBookingSheet;
+    return AnimatedSlide(
+      offset: hideCategoryContent ? const Offset(0, 0.16) : Offset.zero,
+      duration: _bookingPanelShiftDuration,
+      curve: Curves.easeInOutCubicEmphasized,
+      child: AnimatedOpacity(
+        opacity: hideCategoryContent ? 0.0 : 1.0,
+        duration: kAppMotion.panelFade,
+        curve: Curves.easeInOutCubic,
+        child: child,
+      ),
+    );
+  }
+
+  Widget _buildInlineBookingOverlay() {
+    return IgnorePointer(
+      ignoring: !_showBookingSheet || _activeRequestId == null,
+      child: AnimatedOpacity(
+        opacity: _showBookingSheet && _activeRequestId != null ? 1.0 : 0.0,
+        duration: kAppMotion.bookingFade,
+        curve: Curves.easeInOutCubic,
+        child: AnimatedSlide(
+          offset: _showBookingSheet && _activeRequestId != null
+              ? Offset.zero
+              : const Offset(0, 0.16),
+          duration: kAppMotion.bookingSlide,
+          curve: Curves.easeInOutCubicEmphasized,
+          child: _activeRequestId == null
+              ? const SizedBox.shrink()
+              : BookingDetailsScreen(
+                  requestId: _activeRequestId,
+                  embedded: true,
+                  onCloseRequested: _closeInlineBooking,
+                  embeddedMapCenterProvider: widget.embeddedMapCenterProvider,
+                  onEmbeddedAdjustingChanged: widget.onEmbeddedAdjustingChanged,
+                  onEmbeddedAdjustTargetChanged: widget.onEmbeddedAdjustTargetChanged,
+                ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _fetchNearbyPlaces(String categoryLabel) async {
+    debugPrint('[Category] _fetchNearbyPlaces called for category: $categoryLabel');
+    
+    if (_userLocation == null) {
+      debugPrint('[Category] User location is null, waiting for location...');
+      if (mounted) {
+        setState(() {
+          _loadingPlaces = true;
+        });
+      }
+      return;
+    }
+
+    debugPrint('[Category] User location: ${_userLocation!.latitude}, ${_userLocation!.longitude}');
+
+    final cacheKey = _buildNearbyCacheKey(categoryLabel);
+    final cachedPlaces = _nearbyPlacesCache[cacheKey];
+    final hasCachedPlaces = cachedPlaces != null && cachedPlaces.isNotEmpty;
+
+    if (hasCachedPlaces && mounted) {
+      setState(() {
+        _dynamicPlaces = cachedPlaces;
+        _loadingPlaces = false;
+      });
+      _fitMarkers(_buildMarkers(cachedPlaces));
+    }
+
+    if (cachedPlaces != null && _isNearbyCacheFresh(cacheKey)) {
+      _schedulePrefetchNearbyAroundActiveCategory();
+      return;
+    }
+
+    final fetchToken = ++_nearbyFetchToken;
+    if (mounted && !hasCachedPlaces) {
+      setState(() {
+        _loadingPlaces = true;
+      });
+    }
 
     try {
       final keyword = categoryKeywords[categoryLabel] ?? categoryLabel.toLowerCase();
-      print('[Category] Using keyword: $keyword for category: $categoryLabel');
+      debugPrint('[Category] Using keyword: $keyword for category: $categoryLabel');
       
       final results = await _placesService.searchNearbyPlaces(
         latitude: _userLocation!.latitude,
         longitude: _userLocation!.longitude,
         keyword: keyword,
         radius: 15000,
-      );
+      ).timeout(const Duration(seconds: 10));
 
-      print('[Category] API returned ${results.length} places');
-
-      if (mounted) {
-        setState(() {
-          _dynamicPlaces = results
-              .map((r) => PlaceModel(
-                    title: r.name,
-                    subtitle: r.address ?? '',
-                    status: r.openNow ? 'Open' : null,
-                    distance: r.rating != null ? '★ ${r.rating!.toStringAsFixed(1)}' : '',
-                    latitude: r.latitude,
-                    longitude: r.longitude,
-                  ))
-              .toList();
-          _loadingPlaces = false;
-        });
-
-        print('[Category] State updated with ${_dynamicPlaces.length} places');
-
-        // Update markers on map
-        if (_dynamicPlaces.isNotEmpty) {
-          final markers = _buildMarkers(_dynamicPlaces);
-          _fitMarkers(markers);
-        }
+      if (!mounted || fetchToken != _nearbyFetchToken) {
+        return;
       }
+
+      debugPrint('[Category] API returned ${results.length} places');
+
+      final mappedPlaces = results
+          .map((r) => PlaceModel(
+                title: r.name,
+                subtitle: _removeStreetFromAddress(r.address),
+                status: r.openNow ? 'Open' : 'Closed',
+                distance: _buildRatingDistance(r.rating, r.latitude, r.longitude),
+                latitude: r.latitude,
+                longitude: r.longitude,
+              ))
+          .toList(growable: false);
+
+      _nearbyPlacesCache[cacheKey] = mappedPlaces;
+      _nearbyPlacesCacheTime[cacheKey] = DateTime.now();
+
+      setState(() {
+        _dynamicPlaces = mappedPlaces;
+        _loadingPlaces = false;
+      });
+
+      debugPrint('[Category] State updated with ${_dynamicPlaces.length} places');
+
+      if (_dynamicPlaces.isNotEmpty) {
+        final markers = _buildMarkers(_dynamicPlaces);
+        _fitMarkers(markers);
+      }
+      _schedulePrefetchNearbyAroundActiveCategory();
     } catch (e) {
-      print('[Category] ERROR fetching nearby places: $e');
-      if (mounted) {
+      debugPrint('[Category] ERROR fetching nearby places: $e');
+      if (mounted && fetchToken == _nearbyFetchToken) {
         setState(() {
           _loadingPlaces = false;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to load places: $e')),
-        );
+        if (cachedPlaces != null && cachedPlaces.isNotEmpty) {
+          setState(() {
+            _dynamicPlaces = cachedPlaces;
+          });
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to load places: $e')),
+          );
+        }
       }
     }
   }
@@ -284,10 +566,73 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
     _categories = widget.categories ?? _loadCategoriesOnly();
     if (_categories.isNotEmpty) {
       _activeCategoryIndex = widget.initialCategoryIndex.clamp(0, _categories.length - 1);
+      _loadingPlaces = true;
     }
     _initPlacesService();
     _initLocation(); // This will also fetch places once location is available
     _searchFocusNode.addListener(_handleSearchFocus);
+    if (widget.externalSearchQuery != null) {
+      _query = widget.externalSearchQuery!.trim();
+      _searchController.text = _query;
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant CategoryWithPlacesScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextExternalQuery = widget.externalSearchQuery?.trim();
+    final prevExternalQuery = oldWidget.externalSearchQuery?.trim();
+    if (nextExternalQuery != null && nextExternalQuery != prevExternalQuery) {
+      if (_searchController.text != nextExternalQuery) {
+        _searchController.text = nextExternalQuery;
+      }
+      _handleSearchChanged(nextExternalQuery);
+    }
+    if (widget.externalSearchSubmitRequestId != oldWidget.externalSearchSubmitRequestId) {
+      _selectFirstFilteredPlace();
+    }
+  }
+
+  Future<void> _selectFirstFilteredPlace() async {
+    final lower = _query.toLowerCase();
+    final filtered = _query.isEmpty
+        ? _dynamicPlaces
+        : _dynamicPlaces
+            .where((place) =>
+                place.title.toLowerCase().contains(lower) ||
+                place.subtitle.toLowerCase().contains(lower))
+            .toList();
+
+    if (_query.isEmpty) {
+      if (filtered.isNotEmpty) {
+        await _handlePlaceSelected(filtered.first);
+      }
+      return;
+    }
+
+    var predictions = _autocompleteResults;
+    if (predictions.isEmpty) {
+      try {
+        predictions = await _placesService.getAutocompletePredictions(
+          input: _query,
+          latitude: _userLocation?.latitude,
+          longitude: _userLocation?.longitude,
+          restrictToCabanatuan: true,
+          strictCityFilter: true,
+        );
+      } catch (_) {
+        predictions = const [];
+      }
+    }
+
+    if (predictions.isNotEmpty) {
+      await _handlePlacePredictionSelected(predictions.first);
+      return;
+    }
+
+    if (filtered.isNotEmpty) {
+      await _handlePlaceSelected(filtered.first);
+    }
   }
 
   List<CategoryModel> _loadCategoriesOnly() {
@@ -329,7 +674,7 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
       final apiKey = await AppConfig.getGoogleMapsApiKey();
       _placesService = GooglePlacesService(apiKey: apiKey);
     } catch (e) {
-      print('Error initializing Places service: $e');
+      debugPrint('Error initializing Places service: $e');
       // Fallback to unrestricted hardcoded key
       _placesService = GooglePlacesService(apiKey: 'AIzaSyD7eRiM0iLc8DJt3DqdjMhiI8A6BmzBQyY');
     }
@@ -337,15 +682,157 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _prefetchDebounce?.cancel();
     _searchController.dispose();
     _searchFocusNode.dispose();
     _mapController?.dispose();
+    _pickerMapController?.dispose();
     super.dispose();
   }
 
-  void _handleSearchChanged(String value) async {
+  void _openInlineMapPicker() {
+    final fallback = _userLocation != null
+        ? LatLng(_userLocation!.latitude, _userLocation!.longitude)
+        : const LatLng(14.5995, 120.9842);
     setState(() {
-      _query = value.trim();
+      _pickerMapCenter = fallback;
+      _showMapPickerSheet = true;
+    });
+  }
+
+  void _closeInlineMapPicker() {
+    setState(() {
+      _showMapPickerSheet = false;
+    });
+  }
+
+  Future<void> _confirmInlineMapPicker() async {
+    final selectedPlace = PlaceModel(
+      title: 'Pinned location',
+      subtitle: 'Pinned on map',
+      status: null,
+      distance: '',
+      latitude: _pickerMapCenter.latitude,
+      longitude: _pickerMapCenter.longitude,
+    );
+
+    _closeInlineMapPicker();
+    await _handlePlaceSelected(selectedPlace);
+  }
+
+  Widget _buildInlineMapPickerOverlay(Responsive r) {
+    return IgnorePointer(
+      ignoring: !_showMapPickerSheet,
+      child: AnimatedOpacity(
+        opacity: _showMapPickerSheet ? 1.0 : 0.0,
+        duration: kAppMotion.overlayFade,
+        curve: Curves.easeInOutCubic,
+        child: AnimatedSlide(
+          offset: _showMapPickerSheet ? Offset.zero : const Offset(0, 0.08),
+          duration: kAppMotion.overlaySlide,
+          curve: Curves.easeInOutCubicEmphasized,
+          child: Container(
+            color: const Color(0xFF121212),
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: GoogleMap(
+                    initialCameraPosition: CameraPosition(
+                      target: _pickerMapCenter,
+                      zoom: 15,
+                    ),
+                    cloudMapId: _useMapId ? _cloudMapId : null,
+                    style: _useMapId ? null : _mapStyle,
+                    onMapCreated: (controller) {
+                      _pickerMapController = controller;
+                    },
+                    onCameraMove: (position) {
+                      _pickerMapCenter = position.target;
+                    },
+                    myLocationButtonEnabled: false,
+                    zoomControlsEnabled: false,
+                    mapToolbarEnabled: false,
+                    compassEnabled: false,
+                    tiltGesturesEnabled: false,
+                  ),
+                ),
+                const IgnorePointer(
+                  child: Center(
+                    child: Icon(Icons.location_on, color: Colors.redAccent, size: 36),
+                  ),
+                ),
+                SafeArea(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: r.space(12), vertical: r.space(8)),
+                    child: Row(
+                      children: [
+                        Text(
+                          'Choose location',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: r.font(12),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          icon: Icon(Icons.close, color: Colors.white70, size: r.icon(18)),
+                          onPressed: _closeInlineMapPicker,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.bottomCenter,
+                  child: Padding(
+                    padding: EdgeInsets.only(left: r.space(12), right: r.space(12), bottom: r.space(10)),
+                    child: Container(
+                      padding: EdgeInsets.only(left: r.space(12), right: r.space(12), top: r.space(12), bottom: r.space(10)),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1A1A1A),
+                        borderRadius: BorderRadius.circular(r.radius(16)),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: double.infinity,
+                            height: r.space(40),
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFFC9B469),
+                                foregroundColor: Colors.black,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(r.radius(10)),
+                                ),
+                              ),
+                              onPressed: _confirmInlineMapPicker,
+                              child: const Text('Use this location'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _handleSearchChanged(String value) {
+    final query = value.trim();
+
+    setState(() {
+      _query = query;
       // Keep showing if focused or if there's text
       if (_searchFocused || _query.isNotEmpty) {
         _showAutocomplete = true;
@@ -354,9 +841,13 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
       }
     });
 
-    if (_query.isEmpty) {
+    _searchDebounce?.cancel();
+
+    if (query.isEmpty) {
+      _autocompleteFetchToken++;
       setState(() {
         _autocompleteResults = [];
+        _loadingAutocomplete = false;
       });
       // Show all real places in current category
       final markers = _buildMarkers(_dynamicPlaces);
@@ -364,41 +855,41 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
       return;
     }
 
-    // Show loading indicator while fetching
-    if (mounted) {
-      setState(() {
-        _loadingPlaces = true;
-      });
-    }
+    setState(() {
+      _loadingAutocomplete = true;
+    });
 
-    // Fetch autocomplete predictions from Google Places API
-    try {
-      final predictions = await _placesService.getAutocompletePredictions(
-        input: _query,
-        latitude: _userLocation?.latitude,
-        longitude: _userLocation?.longitude,
-      );
-      
-      if (mounted) {
+    final fetchToken = ++_autocompleteFetchToken;
+    final scheduledQuery = query;
+    _searchDebounce = Timer(_autocompleteDebounce, () async {
+      try {
+        final predictions = await _placesService.getAutocompletePredictions(
+          input: scheduledQuery,
+          latitude: _userLocation?.latitude,
+          longitude: _userLocation?.longitude,
+          restrictToCabanatuan: true,
+          strictCityFilter: true,
+        );
+
+        if (!mounted || fetchToken != _autocompleteFetchToken) {
+          return;
+        }
+
         setState(() {
           _autocompleteResults = predictions;
-          _loadingPlaces = false;
+          _loadingAutocomplete = false;
         });
-      }
-    } catch (e) {
-      print('Error fetching autocomplete: $e');
-      if (mounted) {
+      } catch (e) {
+        debugPrint('Error fetching autocomplete: $e');
+        if (!mounted || fetchToken != _autocompleteFetchToken) {
+          return;
+        }
         setState(() {
-          _loadingPlaces = false;
+          _loadingAutocomplete = false;
           _autocompleteResults = [];
         });
       }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error searching: $e')),
-        );
-      }
-    }
+    });
   }
 
   void _addToRecents(PlaceModel place) {
@@ -419,7 +910,7 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
       if (details != null && details.latitude != null && details.longitude != null) {
         final place = PlaceModel(
           title: details.name ?? prediction.mainText,
-          subtitle: prediction.secondaryText,
+          subtitle: _removeStreetFromAddress(prediction.secondaryText),
           status: null,
           distance: 'Via Maps',
           latitude: details.latitude,
@@ -449,30 +940,19 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
         final markers = {marker};
         _fitMarkers(markers);
         
-        // Show the place details
-        await Future.delayed(const Duration(milliseconds: 500));
         if (mounted) {
           _handlePlaceSelected(place);
         }
       }
     } catch (e) {
-      print('Error selecting place: $e');
+      debugPrint('Error selecting place: $e');
+      if (!mounted) {
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to load place details: $e')),
       );
     }
-  }
-
-  List<PlaceModel> _filterPlaces(List<CategoryModel> categories, String query) {
-    if (query.isEmpty) {
-      return categories[_activeCategoryIndex].places;
-    }
-
-    final lower = query.toLowerCase();
-    return categories
-        .expand((category) => category.places)
-        .where((place) => place.title.toLowerCase().contains(lower) || place.subtitle.toLowerCase().contains(lower))
-        .toList();
   }
 
   LatLng _placeLatLng(PlaceModel place, int index) {
@@ -542,33 +1022,34 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
 
   Future<void> _initLocation() async {
     try {
-      print('Starting location initialization...');
+      debugPrint('Starting location initialization...');
       
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      print('Location service enabled: $serviceEnabled');
+      debugPrint('Location service enabled: $serviceEnabled');
       
       if (!serviceEnabled) {
-        print('Location service not enabled, opening settings...');
+        debugPrint('Location service not enabled, opening settings...');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Please enable location services')),
           );
         }
         await Geolocator.openLocationSettings();
+        _useDefaultLocation();
         return;
       }
 
       var permission = await Geolocator.checkPermission();
-      print('Current permission: $permission');
+      debugPrint('Current permission: $permission');
       
       if (permission == LocationPermission.denied) {
-        print('Requesting location permission...');
+        debugPrint('Requesting location permission...');
         permission = await Geolocator.requestPermission();
-        print('Permission after request: $permission');
+        debugPrint('Permission after request: $permission');
       }
 
       if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-        print('Location permission denied');
+        debugPrint('Location permission denied');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Location permission denied. Using default location.')),
@@ -587,10 +1068,10 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
         _hasLocationPermission = true;
       });
 
-      print('Permission granted, getting position...');
+      debugPrint('Permission granted, getting position...');
       await _centerOnUser();
     } catch (e) {
-      print('Error in _initLocation: $e');
+      debugPrint('Error in _initLocation: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Location error: $e')),
@@ -631,27 +1112,29 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
       // Fetch places for the first category with default location
       if (_categories.isNotEmpty) {
         _fetchNearbyPlaces(_categories[_activeCategoryIndex].label);
+        _schedulePrefetchNearbyAroundActiveCategory();
       }
     }
   }
 
   Future<void> _centerOnUser() async {
     try {
-      print('Getting current position with timeout...');
+      debugPrint('Getting current position with timeout...');
       
       final position = await Geolocator.getCurrentPosition(
-        timeLimit: const Duration(seconds: 10),
-        forceAndroidLocationManager: false,
+        locationSettings: const LocationSettings(
+          timeLimit: Duration(seconds: 10),
+        ),
       ).timeout(
         const Duration(seconds: 15),
         onTimeout: () {
-          print('Location request timed out, using default');
+          debugPrint('Location request timed out, using default');
           _useDefaultLocation();
           throw TimeoutException('Location request timed out');
         },
       );
 
-      print('Got position: ${position.latitude}, ${position.longitude}');
+      debugPrint('Got position: ${position.latitude}, ${position.longitude}');
       _userLocation = position;
       
       if (_mapController != null) {
@@ -666,12 +1149,13 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
       // Fetch places for the first category now that we have location
       if (_categories.isNotEmpty && mounted) {
         await _fetchNearbyPlaces(_categories[_activeCategoryIndex].label);
+        _schedulePrefetchNearbyAroundActiveCategory();
       }
     } on TimeoutException {
-      print('Timeout getting location');
+      debugPrint('Timeout getting location');
       // Already handled in timeout callback
     } catch (e) {
-      print('Error getting user location: $e');
+      debugPrint('Error getting user location: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Location error: $e. Using default location.')),
@@ -705,12 +1189,10 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
       ),
       markers: markers,
       cloudMapId: _useMapId ? _cloudMapId : null,
+      style: _useMapId ? null : _mapStyle,
       onMapCreated: (controller) {
         _mapController = controller;
         _mapReady = true;
-        if (!_useMapId) {
-          _mapController?.setMapStyle(_mapStyle);
-        }
         _scheduleMapHealthCheck();
         if (_hasLocationPermission) {
           _centerOnUser();
@@ -760,7 +1242,7 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
             height: topCircle,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: const Color(0xFFD4AF37).withOpacity(0.08),
+              color: const Color(0xFFD4AF37).withValues(alpha: 0.08),
             ),
           ),
         ),
@@ -772,7 +1254,7 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
             height: bottomCircle,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: Colors.white.withOpacity(0.04),
+              color: Colors.white.withValues(alpha: 0.04),
             ),
           ),
         ),
@@ -805,6 +1287,113 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
     );
   }
 
+  Widget _buildPlacesPanel(
+    Responsive r,
+    List<PlaceModel> places, {
+    ScrollController? listController,
+    bool roundedTopOnly = true,
+    List<PlacePrediction> autocompletePredictions = const [],
+  }) {
+    return AnimatedSwitcher(
+      duration: kAppMotion.switcher,
+      switchInCurve: Curves.easeInOutCubic,
+      switchOutCurve: Curves.easeInOutCubic,
+      transitionBuilder: (child, animation) {
+        final offsetAnimation = Tween<Offset>(begin: const Offset(0, 0.05), end: Offset.zero)
+            .animate(animation);
+        return FadeTransition(
+          opacity: animation,
+          child: SlideTransition(position: offsetAnimation, child: child),
+        );
+      },
+      child: Container(
+        key: ValueKey(_activeCategoryIndex),
+        padding: EdgeInsets.only(
+          left: r.space(16),
+          right: r.space(16),
+          top: r.space(2),
+          bottom: 0,
+        ),
+        decoration: BoxDecoration(
+          color: Colors.transparent,
+          borderRadius: roundedTopOnly
+              ? BorderRadius.only(
+                  topLeft: Radius.circular(r.radius(18)),
+                  topRight: Radius.circular(r.radius(18)),
+                )
+              : BorderRadius.circular(r.radius(18)),
+          border: Border.all(color: Colors.transparent),
+        ),
+        child: _loadingPlaces
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(color: const Color(0xFFE2C26D)),
+                    SizedBox(height: r.space(12)),
+                    Text(
+                      'Finding places nearby...',
+                      style: TextStyle(color: Colors.white54, fontSize: r.font(12)),
+                    ),
+                  ],
+                ),
+              )
+            : places.isEmpty && autocompletePredictions.isNotEmpty
+                ? ListView.separated(
+                    controller: listController,
+                    itemCount: autocompletePredictions.length,
+                    separatorBuilder: (context, index) => SizedBox(height: r.space(10)),
+                    itemBuilder: (context, index) {
+                      final prediction = autocompletePredictions[index];
+                      return _PlaceTile(
+                        title: prediction.mainText,
+                        subtitle: _removeStreetFromAddress(prediction.secondaryText),
+                        distance: 'Via Maps',
+                        status: null,
+                        onTap: () => _handlePlacePredictionSelected(prediction),
+                      );
+                    },
+                  )
+            : places.isEmpty
+                ? Center(
+                    child: Text(
+                      _query.isEmpty
+                          ? 'No places found. Make sure location is enabled.'
+                          : 'No results found for "$_query".',
+                      style: TextStyle(color: Colors.white54, fontSize: r.font(12)),
+                      textAlign: TextAlign.center,
+                    ),
+                  )
+                : ListView.separated(
+                    controller: listController,
+                    itemCount: places.length + 1,
+                    separatorBuilder: (context, index) => SizedBox(height: r.space(10)),
+                    itemBuilder: (context, index) {
+                      if (index == places.length) {
+                        return TextButton(
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.white70,
+                            padding: EdgeInsets.symmetric(vertical: r.space(10)),
+                          ),
+                          onPressed: _openInlineMapPicker,
+                          child: Text('Choose on map', style: TextStyle(fontSize: r.font(12))),
+                        );
+                      }
+
+                      final place = places[index];
+                      return _PlaceTile(
+                        title: place.title,
+                        subtitle: place.subtitle,
+                        distance: place.distance,
+                        status: place.status,
+                        onTap: () => _handlePlaceSelected(place),
+                      );
+                    },
+                  ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final r = Responsive.of(context);
@@ -822,176 +1411,242 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
       );
     }
 
-    final activeCategory = _categories[_activeCategoryIndex];
     // Always use real dynamic places (never fallback to mock)
-    final places = _query.isEmpty
-        ? _dynamicPlaces
-        : _dynamicPlaces
-            .where((place) {
-              final lower = _query.toLowerCase();
-              return place.title.toLowerCase().contains(lower) || 
-                     place.subtitle.toLowerCase().contains(lower);
-            })
-            .toList();
+    final localFiltered = _query.isEmpty
+      ? _dynamicPlaces
+      : _dynamicPlaces
+        .where((place) {
+          final lower = _query.toLowerCase();
+          return place.title.toLowerCase().contains(lower) || 
+             place.subtitle.toLowerCase().contains(lower);
+        })
+        .toList();
+
+    final places = _query.isEmpty ? localFiltered : <PlaceModel>[];
+
+    final autocompleteFallback = widget.placesOnly &&
+      _query.isNotEmpty &&
+      places.isEmpty &&
+      _autocompleteResults.isNotEmpty;
     
     final markers = _buildMarkers(places);
     _pendingFitMarkers = markers;
+
+    if (widget.placesOnly) {
+      return Stack(
+        children: [
+          _buildTransitioningCategoryContent(
+            child: Container(
+              color: Colors.transparent,
+              child: _buildPlacesPanel(
+                r,
+                places,
+                listController: widget.placesScrollController,
+                roundedTopOnly: false,
+                autocompletePredictions:
+                    autocompleteFallback ? _autocompleteResults : const [],
+              ),
+            ),
+          ),
+          Positioned.fill(child: _buildInlineBookingOverlay()),
+          Positioned.fill(child: _buildInlineMapPickerOverlay(r)),
+        ],
+      );
+    }
 
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: Stack(
         children: [
-          _buildLiveMap(markers),
-          if (_mapFailed) Positioned.fill(child: _buildMapPlaceholder()),
-          SafeArea(
-            bottom: false,
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(0, r.space(320), 0, 0),
-              child: Column(
-                children: [
-                  Container(
-                    width: r.space(32),
-                    height: r.space(2),
-                    decoration: BoxDecoration(
-                      color: Colors.white24,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                  ),
-                  SizedBox(height: r.space(12)),
-                  // Search field with autocomplete
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: r.space(16)),
+          _buildTransitioningCategoryContent(
+            child: Stack(
+              children: [
+                _buildLiveMap(markers),
+                if (_mapFailed) Positioned.fill(child: _buildMapPlaceholder()),
+                SafeArea(
+                  bottom: false,
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(0, r.space(320), 0, 0),
                     child: Column(
                       children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(r.radius(16)),
-                          child: BackdropFilter(
-                            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                            child: Container(
-                              padding: EdgeInsets.symmetric(horizontal: r.space(10), vertical: r.space(6)),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.05),
-                                borderRadius: BorderRadius.circular(r.radius(16)),
-                                border: Border.all(color: Colors.white.withOpacity(0.16)),
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(Icons.location_on, color: Colors.white70, size: r.icon(16)),
-                                  SizedBox(width: r.space(6)),
-                                  Expanded(
-                                    child: TextField(
-                                      controller: _searchController,
-                                      focusNode: _searchFocusNode,
-                                      onChanged: _handleSearchChanged,
-                                      style: TextStyle(color: Colors.white, fontSize: r.font(11), fontWeight: FontWeight.w600),
-                                      decoration: InputDecoration(
-                                        hintText: 'Search destination',
-                                        hintStyle: TextStyle(color: Colors.white54, fontSize: r.font(11)),
-                                        border: InputBorder.none,
-                                      ),
-                                    ),
-                                  ),
-                                  IconButton(
-                                    icon: Icon(Icons.close, color: Colors.white70, size: r.icon(16)),
-                                    onPressed: () => Navigator.maybePop(context),
-                                    padding: EdgeInsets.zero,
-                                    constraints: BoxConstraints(minWidth: r.space(32), minHeight: r.space(32)),
-                                  ),
-                                ],
-                              ),
-                            ),
+                        Container(
+                          width: r.space(32),
+                          height: r.space(2),
+                          decoration: BoxDecoration(
+                            color: Colors.white24,
+                            borderRadius: BorderRadius.circular(999),
                           ),
                         ),
-                        // Autocomplete/Recents dropdown
-                        if (_showAutocomplete)
-                          Padding(
-                            padding: EdgeInsets.only(top: r.space(8)),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(r.radius(12)),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF1F1F1F),
-                                  borderRadius: BorderRadius.circular(r.radius(12)),
-                                  border: Border.all(color: Colors.white10),
-                                ),
-                                constraints: BoxConstraints(maxHeight: r.space(280)),
-                                child: _loadingPlaces && _query.isNotEmpty
-                                    ? Center(
-                                        child: Padding(
-                                          padding: EdgeInsets.all(r.space(16)),
-                                          child: Column(
-                                            mainAxisAlignment: MainAxisAlignment.center,
-                                            children: [
-                                              CircularProgressIndicator(color: const Color(0xFFE2C26D)),
-                                              SizedBox(height: r.space(8)),
-                                              Text(
-                                                'Searching...',
-                                                style: TextStyle(color: Colors.white54, fontSize: r.font(12)),
-                                              ),
-                                            ],
+                        SizedBox(height: r.space(12)),
+                        // Search field with autocomplete
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: r.space(16)),
+                          child: Column(
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(r.radius(16)),
+                                child: BackdropFilter(
+                                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                                  child: Container(
+                                    padding: EdgeInsets.symmetric(horizontal: r.space(10), vertical: r.space(6)),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(alpha: 0.05),
+                                      borderRadius: BorderRadius.circular(r.radius(16)),
+                                      border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.location_on, color: Colors.white70, size: r.icon(16)),
+                                        SizedBox(width: r.space(6)),
+                                        Expanded(
+                                          child: TextField(
+                                            controller: _searchController,
+                                            focusNode: _searchFocusNode,
+                                            onChanged: _handleSearchChanged,
+                                            style: TextStyle(color: Colors.white, fontSize: r.font(11), fontWeight: FontWeight.w600),
+                                            decoration: InputDecoration(
+                                              hintText: 'Search destination',
+                                              hintStyle: TextStyle(color: Colors.white54, fontSize: r.font(11)),
+                                              border: InputBorder.none,
+                                            ),
                                           ),
                                         ),
-                                      )
-                                    : (_query.isEmpty && _recentSearches.isEmpty)
-                                        ? Padding(
-                                            padding: EdgeInsets.all(r.space(16)),
-                                            child: Text(
-                                              'No recent searches',
-                                              style: TextStyle(
-                                                color: Colors.white54,
-                                                fontSize: r.font(12),
-                                              ),
-                                            ),
-                                          )
-                                        : (_query.isNotEmpty && _autocompleteResults.isEmpty)
-                                            ? Padding(
-                                                padding: EdgeInsets.all(r.space(16)),
-                                                child: Text(
-                                                  'No results found for "$_query"',
-                                                  style: TextStyle(
-                                                    color: Colors.white54,
-                                                    fontSize: r.font(12),
-                                                  ),
-                                                ),
-                                              )
-                                            : ListView.builder(
-                                                shrinkWrap: true,
-                                                itemCount: _query.isEmpty ? _recentSearches.length : _autocompleteResults.length,
-                                        itemBuilder: (context, index) {
-                                          if (_query.isEmpty) {
-                                            // Show recent searches
-                                            final place = _recentSearches[index];
-                                            return InkWell(
-                                              onTap: () {
-                                                setState(() {
-                                                  _showAutocomplete = false;
-                                                  _searchController.text = place.title;
-                                                  _query = place.title;
-                                                });
-                                                _handlePlaceSelected(place);
-                                              },
+                                        IconButton(
+                                          icon: Icon(Icons.close, color: Colors.white70, size: r.icon(16)),
+                                          onPressed: () => Navigator.maybePop(context),
+                                          padding: EdgeInsets.zero,
+                                          constraints: BoxConstraints(minWidth: r.space(32), minHeight: r.space(32)),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              // Autocomplete/Recents dropdown
+                              if (_showAutocomplete)
+                                Padding(
+                                  padding: EdgeInsets.only(top: r.space(8)),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(r.radius(12)),
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF1F1F1F),
+                                        borderRadius: BorderRadius.circular(r.radius(12)),
+                                        border: Border.all(color: Colors.white10),
+                                      ),
+                                      constraints: BoxConstraints(maxHeight: r.space(280)),
+                                      child: _loadingAutocomplete && _query.isNotEmpty
+                                          ? Center(
                                               child: Padding(
-                                                padding: EdgeInsets.symmetric(horizontal: r.space(12), vertical: r.space(12)),
-                                                child: Row(
+                                                padding: EdgeInsets.all(r.space(16)),
+                                                child: Column(
+                                                  mainAxisAlignment: MainAxisAlignment.center,
                                                   children: [
-                                                    Icon(Icons.history, color: Colors.white54, size: r.icon(16)),
-                                                    SizedBox(width: r.space(8)),
-                                                    Expanded(
+                                                    CircularProgressIndicator(color: const Color(0xFFE2C26D)),
+                                                    SizedBox(height: r.space(8)),
+                                                    Text(
+                                                      'Searching...',
+                                                      style: TextStyle(color: Colors.white54, fontSize: r.font(12)),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            )
+                                          : (_query.isEmpty && _recentSearches.isEmpty)
+                                              ? Padding(
+                                                  padding: EdgeInsets.all(r.space(16)),
+                                                  child: Text(
+                                                    'No recent searches',
+                                                    style: TextStyle(
+                                                      color: Colors.white54,
+                                                      fontSize: r.font(12),
+                                                    ),
+                                                  ),
+                                                )
+                                              : (_query.isNotEmpty && _autocompleteResults.isEmpty)
+                                                  ? Padding(
+                                                      padding: EdgeInsets.all(r.space(16)),
+                                                      child: Text(
+                                                        'No results found for "$_query"',
+                                                        style: TextStyle(
+                                                          color: Colors.white54,
+                                                          fontSize: r.font(12),
+                                                        ),
+                                                      ),
+                                                    )
+                                                  : ListView.builder(
+                                                      shrinkWrap: true,
+                                                      itemCount: _query.isEmpty ? _recentSearches.length : _autocompleteResults.length,
+                                              itemBuilder: (context, index) {
+                                                if (_query.isEmpty) {
+                                                  // Show recent searches
+                                                  final place = _recentSearches[index];
+                                                  return InkWell(
+                                                    onTap: () {
+                                                      setState(() {
+                                                        _showAutocomplete = false;
+                                                        _searchController.text = place.title;
+                                                        _query = place.title;
+                                                      });
+                                                      _handlePlaceSelected(place);
+                                                    },
+                                                    child: Padding(
+                                                      padding: EdgeInsets.symmetric(horizontal: r.space(12), vertical: r.space(12)),
+                                                      child: Row(
+                                                        children: [
+                                                          Icon(Icons.history, color: Colors.white54, size: r.icon(16)),
+                                                          SizedBox(width: r.space(8)),
+                                                          Expanded(
+                                                            child: Column(
+                                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                                              children: [
+                                                                Text(
+                                                                  place.title,
+                                                                  style: TextStyle(
+                                                                    color: Colors.white,
+                                                                    fontSize: r.font(12),
+                                                                    fontWeight: FontWeight.w600,
+                                                                  ),
+                                                                ),
+                                                                if (place.subtitle.isNotEmpty) ...[
+                                                                  SizedBox(height: r.space(4)),
+                                                                  Text(
+                                                                    place.subtitle,
+                                                                    style: TextStyle(
+                                                                      color: Colors.white54,
+                                                                      fontSize: r.font(10),
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ],
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  );
+                                                } else {
+                                                  // Show autocomplete predictions
+                                                  final prediction = _autocompleteResults[index];
+                                                  return InkWell(
+                                                    onTap: () => _handlePlacePredictionSelected(prediction),
+                                                    child: Padding(
+                                                      padding: EdgeInsets.symmetric(horizontal: r.space(12), vertical: r.space(12)),
                                                       child: Column(
                                                         crossAxisAlignment: CrossAxisAlignment.start,
                                                         children: [
                                                           Text(
-                                                            place.title,
+                                                            prediction.mainText,
                                                             style: TextStyle(
                                                               color: Colors.white,
                                                               fontSize: r.font(12),
                                                               fontWeight: FontWeight.w600,
                                                             ),
                                                           ),
-                                                          if (place.subtitle.isNotEmpty) ...[
+                                                          if (prediction.secondaryText.isNotEmpty) ...[
                                                             SizedBox(height: r.space(4)),
                                                             Text(
-                                                              place.subtitle,
+                                                              prediction.secondaryText,
                                                               style: TextStyle(
                                                                 color: Colors.white54,
                                                                 fontSize: r.font(10),
@@ -1001,221 +1656,115 @@ class _CategoryWithPlacesScreenState extends State<CategoryWithPlacesScreen> {
                                                         ],
                                                       ),
                                                     ),
-                                                  ],
+                                                  );
+                                                }
+                                              },
+                                            ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        SizedBox(height: r.space(16)),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding: EdgeInsets.symmetric(horizontal: r.space(16)),
+                                child: SizedBox(
+                                  height: chipSize + r.space(4),
+                                  child: SingleChildScrollView(
+                                    scrollDirection: Axis.horizontal,
+                                    child: Row(
+                                      children: List.generate(
+                                        _categories.length,
+                                        (index) {
+                                          final isActive = index == _activeCategoryIndex;
+                                          final item = _categories[index];
+
+                                          return Padding(
+                                            padding: EdgeInsets.only(right: r.space(10)),
+                                            child: GestureDetector(
+                                              onTap: () {
+                                                setState(() {
+                                                  _activeCategoryIndex = index;
+                                                  _showAutocomplete = false;
+                                                  _autocompleteResults = [];
+                                                  _searchController.clear();
+                                                  _query = '';
+                                                  _dynamicPlaces = [];
+                                                  _loadingPlaces = true;
+                                                });
+                                                _fetchNearbyPlaces(item.label);
+                                              },
+                                              child: AnimatedContainer(
+                                                duration: kAppMotion.chipMorph,
+                                                width: chipSize,
+                                                height: chipSize,
+                                                decoration: BoxDecoration(
+                                                  color: isActive ? const Color(0xFFE2C26D) : const Color(0xFF1F1F1F),
+                                                  shape: BoxShape.circle,
+                                                  border: Border.all(
+                                                    color: isActive ? const Color(0xFFF6D98F) : Colors.white10,
+                                                    width: r.space(1.2),
+                                                  ),
+                                                  boxShadow: isActive
+                                                      ? [
+                                                          BoxShadow(
+                                                            color: const Color(0xFFE2C26D).withValues(alpha: 0.35),
+                                                            blurRadius: 16,
+                                                            offset: const Offset(0, 6),
+                                                          ),
+                                                        ]
+                                                      : [],
                                                 ),
-                                              ),
-                                            );
-                                          } else {
-                                            // Show autocomplete predictions
-                                            final prediction = _autocompleteResults[index];
-                                            return InkWell(
-                                              onTap: () => _handlePlacePredictionSelected(prediction),
-                                              child: Padding(
-                                                padding: EdgeInsets.symmetric(horizontal: r.space(12), vertical: r.space(12)),
                                                 child: Column(
-                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  mainAxisAlignment: MainAxisAlignment.center,
                                                   children: [
+                                                    Icon(
+                                                      item.icon,
+                                                      color: isActive ? Colors.black : Colors.white70,
+                                                      size: r.icon(20),
+                                                    ),
+                                                    SizedBox(height: r.space(6)),
                                                     Text(
-                                                      prediction.mainText,
+                                                      item.label,
+                                                      textAlign: TextAlign.center,
                                                       style: TextStyle(
-                                                        color: Colors.white,
-                                                        fontSize: r.font(12),
+                                                        color: isActive ? Colors.black : Colors.white70,
+                                                        fontSize: r.font(10),
                                                         fontWeight: FontWeight.w600,
                                                       ),
                                                     ),
-                                                    if (prediction.secondaryText.isNotEmpty) ...[
-                                                      SizedBox(height: r.space(4)),
-                                                      Text(
-                                                        prediction.secondaryText,
-                                                        style: TextStyle(
-                                                          color: Colors.white54,
-                                                          fontSize: r.font(10),
-                                                        ),
-                                                      ),
-                                                    ],
                                                   ],
                                                 ),
                                               ),
-                                            );
-                                          }
-                                        },
-                                      ),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                  SizedBox(height: r.space(16)),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Padding(
-                          padding: EdgeInsets.symmetric(horizontal: r.space(16)),
-                          child: SizedBox(
-                            height: chipSize + r.space(4),
-                            child: SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: Row(
-                                children: List.generate(
-                                  _categories.length,
-                                  (index) {
-                                    final isActive = index == _activeCategoryIndex;
-                                    final item = _categories[index];
-
-                                    return Padding(
-                                      padding: EdgeInsets.only(right: r.space(10)),
-                                      child: GestureDetector(
-                                        onTap: () {
-                                          setState(() {
-                                            _activeCategoryIndex = index;
-                                            _showAutocomplete = false;
-                                            _autocompleteResults = [];
-                                            _searchController.clear();
-                                            _query = '';
-                                          });
-                                          _fetchNearbyPlaces(item.label);
-                                        },
-                                        child: AnimatedContainer(
-                                          duration: const Duration(milliseconds: 250),
-                                          width: chipSize,
-                                          height: chipSize,
-                                          decoration: BoxDecoration(
-                                            color: isActive ? const Color(0xFFE2C26D) : const Color(0xFF1F1F1F),
-                                            shape: BoxShape.circle,
-                                            border: Border.all(
-                                              color: isActive ? const Color(0xFFF6D98F) : Colors.white10,
-                                              width: r.space(1.2),
                                             ),
-                                            boxShadow: isActive
-                                                ? [
-                                                    BoxShadow(
-                                                      color: const Color(0xFFE2C26D).withOpacity(0.35),
-                                                      blurRadius: 16,
-                                                      offset: const Offset(0, 6),
-                                                    ),
-                                                  ]
-                                                : [],
-                                          ),
-                                          child: Column(
-                                            mainAxisAlignment: MainAxisAlignment.center,
-                                            children: [
-                                              Icon(
-                                                item.icon,
-                                                color: isActive ? Colors.black : Colors.white70,
-                                                size: r.icon(20),
-                                              ),
-                                              SizedBox(height: r.space(6)),
-                                              Text(
-                                                item.label,
-                                                textAlign: TextAlign.center,
-                                                style: TextStyle(
-                                                  color: isActive ? Colors.black : Colors.white70,
-                                                  fontSize: r.font(10),
-                                                  fontWeight: FontWeight.w600,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
+                                          );
+                                        },
                                       ),
-                                    );
-                                  },
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
-                        ),
-                        SizedBox(height: r.space(12)),
-                        Expanded(
-                          child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 350),
-                            switchInCurve: Curves.easeOut,
-                            switchOutCurve: Curves.easeIn,
-                            transitionBuilder: (child, animation) {
-                              final offsetAnimation = Tween<Offset>(begin: const Offset(0, 0.05), end: Offset.zero)
-                                  .animate(animation);
-                              return FadeTransition(
-                                opacity: animation,
-                                child: SlideTransition(position: offsetAnimation, child: child),
-                              );
-                            },
-                            child: Container(
-                              key: ValueKey(_activeCategoryIndex),
-                              padding: EdgeInsets.only(
-                                left: r.space(16),
-                                right: r.space(16),
-                                top: r.space(2),
-                                bottom: 0,
+                              SizedBox(height: r.space(12)),
+                              Expanded(
+                                child: _buildPlacesPanel(r, places),
                               ),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF161616),
-                                borderRadius: BorderRadius.only(
-                                  topLeft: Radius.circular(r.radius(18)),
-                                  topRight: Radius.circular(r.radius(18)),
-                                ),
-                                border: Border.all(color: Colors.white10),
-                              ),
-                              child: _loadingPlaces
-                                  ? Center(
-                                      child: Column(
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          CircularProgressIndicator(color: const Color(0xFFE2C26D)),
-                                          SizedBox(height: r.space(12)),
-                                          Text(
-                                            'Finding places nearby...',
-                                            style: TextStyle(color: Colors.white54, fontSize: r.font(12)),
-                                          ),
-                                        ],
-                                      ),
-                                    )
-                                  : places.isEmpty
-                                      ? Center(
-                                          child: Text(
-                                            _query.isEmpty 
-                                              ? 'No places found. Make sure location is enabled.'
-                                              : 'No results found for "$_query".',
-                                            style: TextStyle(color: Colors.white54, fontSize: r.font(12)),
-                                            textAlign: TextAlign.center,
-                                          ),
-                                        )
-                                      : ListView.separated(
-                                          itemCount: places.length + 1,
-                                          separatorBuilder: (_, __) => SizedBox(height: r.space(10)),
-                                          itemBuilder: (context, index) {
-                                            if (index == places.length) {
-                                              return TextButton(
-                                                style: TextButton.styleFrom(
-                                                  foregroundColor: Colors.white70,
-                                                  padding: EdgeInsets.symmetric(vertical: r.space(10)),
-                                                ),
-                                                onPressed: () => Navigator.pushNamed(context, '/location_map_selection'),
-                                                child: Text('Choose on map', style: TextStyle(fontSize: r.font(12))),
-                                              );
-                                            }
-
-                                            final place = places[index];
-                                            return _PlaceTile(
-                                              title: place.title,
-                                              subtitle: place.subtitle,
-                                              distance: place.distance,
-                                              status: place.status,
-                                              onTap: () => _handlePlaceSelected(place),
-                                            );
-                                          },
-                                        ),
-                            ),
+                            ],
                           ),
                         ),
                       ],
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
+          Positioned.fill(child: _buildInlineBookingOverlay()),
+          Positioned.fill(child: _buildInlineMapPickerOverlay(r)),
         ],
       ),
     );
@@ -1240,47 +1789,123 @@ class _PlaceTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isOpen = status == 'Open';
+    final normalized = distance.replaceAll('•', '·').trim();
+    final parts = normalized.split('·').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+    String topMetric = '';
+    String bottomMetric = '';
+
+    if (parts.length >= 2) {
+      topMetric = parts.first;
+      bottomMetric = parts[1];
+    } else if (parts.length == 1) {
+      if (parts.first.toLowerCase().contains('km')) {
+        bottomMetric = parts.first;
+      } else {
+        topMetric = parts.first;
+      }
+    }
 
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         decoration: BoxDecoration(
           color: Colors.transparent,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: Colors.transparent, width: 0),
         ),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             const Icon(Icons.location_on, color: Color(0xFFE2C26D), size: 18),
-            const SizedBox(width: 10),
+            const SizedBox(width: 9),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 2),
-                  Row(
-                    children: [
-                      Text(subtitle, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                      if (status != null) ...[
-                        const SizedBox(width: 6),
-                        Text(
-                          status!,
-                          style: TextStyle(
-                            color: isOpen ? const Color(0xFFE2C26D) : Colors.white38,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ],
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      height: 1.1,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 11,
+                      height: 1.1,
+                    ),
                   ),
                 ],
               ),
             ),
-            Text(distance, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 102,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  if (status != null && status!.isNotEmpty)
+                    Expanded(
+                      child: Text(
+                        status!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                          color: isOpen ? const Color(0xFFE2C26D) : Colors.white38,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  if (status != null && status!.isNotEmpty) const SizedBox(width: 8),
+                  SizedBox(
+                    width: 44,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          topMetric,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          bottomMetric,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            color: Colors.white54,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),

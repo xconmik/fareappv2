@@ -16,7 +16,6 @@ class AppTheme {
     final colorScheme = const ColorScheme.dark(
       primary: AppColors.goldStart,
       secondary: AppColors.goldEnd,
-      background: AppColors.background,
       surface: AppColors.surface,
     );
 
@@ -40,7 +39,7 @@ class AppTheme {
       cardTheme: CardThemeData(
         color: AppColors.surface,
         elevation: 10,
-        shadowColor: Colors.black.withOpacity(0.35),
+        shadowColor: Colors.black.withValues(alpha: 0.35),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -65,7 +64,7 @@ class AppTheme {
           backgroundColor: AppColors.goldStart,
           foregroundColor: Colors.black,
           elevation: 8,
-          shadowColor: AppColors.goldStart.withOpacity(0.35),
+          shadowColor: AppColors.goldStart.withValues(alpha: 0.35),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
           textStyle: const TextStyle(fontWeight: FontWeight.w700),

@@ -19,47 +19,59 @@ class _AppearanceScreenState extends State<AppearanceScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1C1C1E),
         elevation: 0,
-        title: const Text('Location', style: TextStyle(color: Colors.white)),
+        title: const Text('Appearance', style: TextStyle(color: Colors.white)),
         iconTheme: const IconThemeData(color: Colors.white),
       ),
       body: Padding(
-        padding: EdgeInsets.all(r.space(24)),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Appearance',
-              style: TextStyle(color: Colors.white, fontSize: r.font(20), fontWeight: FontWeight.bold),
-            ),
-            SizedBox(height: r.space(16)),
-            Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFF232323),
-                borderRadius: BorderRadius.circular(r.radius(10)),
+        padding: EdgeInsets.only(left: r.space(20), right: r.space(20), top: r.space(20)),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF232323),
+            borderRadius: BorderRadius.circular(r.radius(12)),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _AppearanceOption(
+                label: 'Light Mode',
+                selected: _mode == 'light',
+                onTap: () => setState(() => _mode = 'light'),
               ),
-              child: Column(
-                children: [
-                  RadioListTile<String>(
-                    value: 'light',
-                    groupValue: _mode,
-                    onChanged: (value) => setState(() => _mode = value ?? 'light'),
-                    title: Text('Light Mode', style: TextStyle(color: Colors.white, fontSize: r.font(14))),
-                    activeColor: const Color(0xFFD4AF37),
-                  ),
-                  const Divider(height: 1, color: Colors.white12),
-                  RadioListTile<String>(
-                    value: 'dark',
-                    groupValue: _mode,
-                    onChanged: (value) => setState(() => _mode = value ?? 'dark'),
-                    title: Text('Dark Mode', style: TextStyle(color: Colors.white, fontSize: r.font(14))),
-                    activeColor: const Color(0xFFD4AF37),
-                  ),
-                ],
+              const Divider(height: 1, color: Colors.white12),
+              _AppearanceOption(
+                label: 'Dark Mode',
+                selected: _mode == 'dark',
+                onTap: () => setState(() => _mode = 'dark'),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+class _AppearanceOption extends StatelessWidget {
+  const _AppearanceOption({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final r = Responsive.of(context);
+    return ListTile(
+      onTap: onTap,
+      title: Text(label, style: TextStyle(color: Colors.white, fontSize: r.font(12))),
+      trailing: selected
+          ? Icon(Icons.check, color: const Color(0xFFC9B469), size: r.icon(18))
+          : null,
     );
   }
 }

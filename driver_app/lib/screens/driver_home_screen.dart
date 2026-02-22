@@ -114,12 +114,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                                 if (!context.mounted) {
                                   return;
                                 }
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(accepted ? 'Request accepted' : 'Already assigned'),
-                                    backgroundColor: accepted ? Colors.green : Colors.red,
-                                  ),
-                                );
+                                return;
                               },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFFD4AF37),

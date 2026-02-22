@@ -16,7 +16,7 @@ class FareModeScreen extends StatelessWidget {
         iconTheme: const IconThemeData(color: Colors.white),
       ),
       body: Padding(
-        padding: EdgeInsets.all(r.space(24)),
+        padding: EdgeInsets.only(left: r.space(24), right: r.space(24), top: r.space(24)),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

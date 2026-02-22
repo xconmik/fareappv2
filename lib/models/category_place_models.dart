@@ -54,6 +54,48 @@ class CategoryModel {
   }
 }
 
+class CategorySeed {
+  final String label;
+  final String iconKey;
+
+  const CategorySeed({required this.label, required this.iconKey});
+}
+
+const List<CategorySeed> kDefaultCategorySeeds = [
+  CategorySeed(label: 'Food', iconKey: 'food'),
+  CategorySeed(label: 'School', iconKey: 'school'),
+  CategorySeed(label: 'Mall', iconKey: 'mall'),
+  CategorySeed(label: 'Cafe', iconKey: 'cafe'),
+  CategorySeed(label: 'Mart', iconKey: 'mart'),
+  CategorySeed(label: 'Hospital', iconKey: 'hospital'),
+  CategorySeed(label: 'Park', iconKey: 'park'),
+  CategorySeed(label: 'Office', iconKey: 'office'),
+  CategorySeed(label: 'Airport', iconKey: 'airport'),
+  CategorySeed(label: 'Hotel', iconKey: 'hotel'),
+  CategorySeed(label: 'Gym', iconKey: 'gym'),
+  CategorySeed(label: 'Cinema', iconKey: 'cinema'),
+  CategorySeed(label: 'Grocery', iconKey: 'grocery'),
+  CategorySeed(label: 'Pharmacy', iconKey: 'pharmacy'),
+  CategorySeed(label: 'Bank', iconKey: 'bank'),
+  CategorySeed(label: 'ATM', iconKey: 'atm'),
+  CategorySeed(label: 'Gas', iconKey: 'gas'),
+  CategorySeed(label: 'Church', iconKey: 'church'),
+  CategorySeed(label: 'Library', iconKey: 'library'),
+  CategorySeed(label: 'Terminal', iconKey: 'terminal'),
+];
+
+List<CategoryModel> buildDefaultCategories() {
+  return kDefaultCategorySeeds
+      .map(
+        (seed) => CategoryModel(
+          label: seed.label,
+          iconKey: seed.iconKey,
+          places: const [],
+        ),
+      )
+      .toList(growable: false);
+}
+
 class CategoryIconRegistry {
   static const Map<String, IconData> _icons = {
     'food': Icons.fastfood,
@@ -68,6 +110,14 @@ class CategoryIconRegistry {
     'hotel': Icons.hotel,
     'gym': Icons.fitness_center,
     'cinema': Icons.movie,
+    'grocery': Icons.local_grocery_store,
+    'pharmacy': Icons.local_pharmacy,
+    'bank': Icons.account_balance,
+    'atm': Icons.atm,
+    'gas': Icons.local_gas_station,
+    'church': Icons.church,
+    'library': Icons.local_library,
+    'terminal': Icons.directions_bus,
     'place': Icons.place,
   };
 

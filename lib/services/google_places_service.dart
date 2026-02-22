@@ -1,11 +1,16 @@
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:async';
-import '../models/category_place_models.dart';
+import 'dart:math' as math;
 
 class GooglePlacesService {
   static const String _baseUrl = 'https://maps.googleapis.com/maps/api';
+  static const double _cabanatuanLat = 15.4866;
+  static const double _cabanatuanLng = 120.9677;
+  static const int _cabanatuanRadius = 15000;
+  static const String _cityName = 'cabanatuan';
+  static const String _provinceName = 'nueva ecija';
   
   final String _apiKey;
 
@@ -17,6 +22,8 @@ class GooglePlacesService {
     required double? latitude,
     required double? longitude,
     String? sessionToken,
+    bool restrictToCabanatuan = false,
+    bool strictCityFilter = false,
   }) async {
     try {
       const radius = 15000; // 15km radius
@@ -27,7 +34,10 @@ class GooglePlacesService {
         'components': 'country:ph', // Philippines
       };
 
-      if (latitude != null && longitude != null) {
+      if (restrictToCabanatuan) {
+        queryParams['location'] = '$_cabanatuanLat,$_cabanatuanLng';
+        queryParams['radius'] = _cabanatuanRadius.toString();
+      } else if (latitude != null && longitude != null) {
         queryParams['location'] = '$latitude,$longitude';
         queryParams['radius'] = radius.toString();
       }
@@ -46,11 +56,21 @@ class GooglePlacesService {
 
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body) as Map<String, dynamic>;
-        final predictions = (json['predictions'] as List<dynamic>?)
-                ?.cast<Map<String, dynamic>>()
-                .map((p) => PlacePrediction.fromJson(p))
-                .toList() ??
-            [];
+        final rawPredictions = (json['predictions'] as List<dynamic>?)
+            ?.cast<Map<String, dynamic>>() ??
+          [];
+
+        final filteredPredictions = strictCityFilter
+          ? rawPredictions.where((p) {
+            final description = (p['description'] as String?) ?? '';
+            final secondaryText = (p['structured_formatting'] as Map<String, dynamic>?)?['secondary_text'] as String? ?? '';
+            return _isCabanatuanText(description) || _isCabanatuanText(secondaryText);
+            }).toList()
+          : rawPredictions;
+
+        final predictions = filteredPredictions
+          .map((p) => PlacePrediction.fromJson(p))
+          .toList();
         return predictions;
       } else if (response.statusCode == 403) {
         throw Exception('Places API key invalid or quota exceeded');
@@ -58,7 +78,7 @@ class GooglePlacesService {
         throw Exception('Failed to fetch predictions: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error getting predictions: $e');
+      debugPrint('Error getting predictions: $e');
       rethrow;
     }
   }
@@ -99,7 +119,7 @@ class GooglePlacesService {
         throw Exception('Failed to fetch place details: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error getting place details: $e');
+      debugPrint('Error getting place details: $e');
       rethrow;
     }
   }
@@ -135,7 +155,7 @@ class GooglePlacesService {
         throw Exception('Geocoding failed: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error geocoding: $e');
+      debugPrint('Error geocoding: $e');
       rethrow;
     }
   }
@@ -146,38 +166,42 @@ class GooglePlacesService {
     required double longitude,
     required String keyword,
     int radius = 5000,
+    bool restrictToCabanatuan = false,
+    bool strictCityFilter = false,
   }) async {
     try {
-      print('[GooglePlaces] Searching nearby places:');
-      print('  - Location: $latitude, $longitude');
-      print('  - Keyword: $keyword');
-      print('  - Radius: ${radius}m');
+      debugPrint('[GooglePlaces] Searching nearby places:');
+      debugPrint('  - Location: $latitude, $longitude');
+      debugPrint('  - Keyword: $keyword');
+      debugPrint('  - Radius: ${radius}m');
       
       final queryParams = {
-        'location': '$latitude,$longitude',
-        'radius': radius.toString(),
+        'location': restrictToCabanatuan
+            ? '$_cabanatuanLat,$_cabanatuanLng'
+            : '$latitude,$longitude',
+        'radius': (restrictToCabanatuan ? _cabanatuanRadius : radius).toString(),
         'keyword': keyword,
         'key': _apiKey,
       };
 
       final uri = Uri.parse('$_baseUrl/place/nearbysearch/json')
           .replace(queryParameters: queryParams);
-      print('  - API URL: $_baseUrl/place/nearbysearch/json');
+        debugPrint('  - API URL: $_baseUrl/place/nearbysearch/json');
 
       final response = await http.get(uri).timeout(
         const Duration(seconds: 8),
         onTimeout: () => throw TimeoutException('Nearby search request timed out'),
       );
 
-      print('[GooglePlaces] Response status: ${response.statusCode}');
+      debugPrint('[GooglePlaces] Response status: ${response.statusCode}');
       
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body) as Map<String, dynamic>;
         final status = json['status'] as String?;
-        print('[GooglePlaces] API status: $status');
+        debugPrint('[GooglePlaces] API status: $status');
         
         if (status != 'OK') {
-          print('[GooglePlaces] Warning: API status is not OK. Response: ${response.body}');
+          debugPrint('[GooglePlaces] Warning: API status is not OK. Response: ${response.body}');
         }
         
         final results = (json['results'] as List<dynamic>?)
@@ -185,17 +209,52 @@ class GooglePlacesService {
                 .map((r) => NearbyPlaceResult.fromJson(r))
                 .toList() ??
             [];
-        print('[GooglePlaces] Found ${results.length} results');
-        return results;
+        final filteredResults = strictCityFilter
+            ? results.where((r) {
+                if (_isCabanatuanText(r.address)) {
+                  return true;
+                }
+                final distanceKm = _haversineKm(
+                  _cabanatuanLat,
+                  _cabanatuanLng,
+                  r.latitude,
+                  r.longitude,
+                );
+                return distanceKm <= (_cabanatuanRadius / 1000.0);
+              }).toList()
+            : results;
+        debugPrint('[GooglePlaces] Found ${filteredResults.length} results');
+        return filteredResults;
       } else {
-        print('[GooglePlaces] Error response: ${response.body}');
+        debugPrint('[GooglePlaces] Error response: ${response.body}');
         throw Exception('Nearby search failed: ${response.statusCode} - ${response.body}');
       }
     } catch (e) {
-      print('[GooglePlaces] Error searching nearby places: $e');
+      debugPrint('[GooglePlaces] Error searching nearby places: $e');
       rethrow;
     }
   }
+
+  bool _isCabanatuanText(String? text) {
+    if (text == null || text.isEmpty) {
+      return false;
+    }
+    final lower = text.toLowerCase();
+    return lower.contains(_cityName) || lower.contains(_provinceName);
+  }
+
+  double _haversineKm(double lat1, double lon1, double lat2, double lon2) {
+    const radiusKm = 6371.0;
+    final dLat = _degToRad(lat2 - lat1);
+    final dLon = _degToRad(lon2 - lon1);
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(_degToRad(lat1)) * math.cos(_degToRad(lat2)) *
+        math.sin(dLon / 2) * math.sin(dLon / 2);
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return radiusKm * c;
+  }
+
+  double _degToRad(double deg) => deg * (math.pi / 180.0);
 }
 
 /// Autocomplete prediction from Google Places API

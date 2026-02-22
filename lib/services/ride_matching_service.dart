@@ -49,6 +49,7 @@ class RideMatchingService {
       },
       'distanceKm': distanceKm,
       'fare': fare,
+      'passengers': 2,
       'routeSummary': '$pickupName → $destinationName',
       'createdAt': FieldValue.serverTimestamp(),
     });
@@ -63,6 +64,75 @@ class RideMatchingService {
     await _firestore.collection('ride_requests').doc(requestId).update({
       'status': 'cancelled',
       'cancelledAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> updatePickupLocation({
+    required String requestId,
+    required String name,
+    required double lat,
+    required double lng,
+  }) async {
+    final docRef = _firestore.collection('ride_requests').doc(requestId);
+    final snapshot = await docRef.get();
+    final data = snapshot.data() ?? <String, dynamic>{};
+    final destination = data['destination'] as Map<String, dynamic>? ?? <String, dynamic>{};
+    final destinationName = destination['name'] as String? ??
+        destination['title'] as String? ??
+        'Destination';
+
+    await docRef.update({
+      'pickup.name': name,
+      'pickup.lat': lat,
+      'pickup.lng': lng,
+      'routeSummary': '$name → $destinationName',
+    });
+  }
+
+  Future<void> updateDestinationLocation({
+    required String requestId,
+    required String name,
+    required double lat,
+    required double lng,
+  }) async {
+    final docRef = _firestore.collection('ride_requests').doc(requestId);
+    final snapshot = await docRef.get();
+    final data = snapshot.data() ?? <String, dynamic>{};
+    final pickup = data['pickup'] as Map<String, dynamic>? ?? <String, dynamic>{};
+    final pickupName = pickup['name'] as String? ??
+        pickup['title'] as String? ??
+        'Pickup';
+
+    await docRef.update({
+      'destination.name': name,
+      'destination.lat': lat,
+      'destination.lng': lng,
+      'routeSummary': '$pickupName → $name',
+    });
+  }
+
+  Future<void> updatePassengers({
+    required String requestId,
+    required int passengers,
+  }) async {
+    await _firestore.collection('ride_requests').doc(requestId).update({
+      'passengers': passengers,
+    });
+  }
+
+  Future<void> updateFare({
+    required String requestId,
+    required double fare,
+  }) async {
+    await _firestore.collection('ride_requests').doc(requestId).update({
+      'fare': fare,
+    });
+  }
+
+  Future<void> acceptRideRequest(String requestId) async {
+    await _firestore.collection('ride_requests').doc(requestId).update({
+      'status': 'assigned',
+      'assignedAt': FieldValue.serverTimestamp(),
     });
   }
 }

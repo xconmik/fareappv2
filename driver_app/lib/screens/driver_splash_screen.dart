@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../widgets/fare_logo.dart';
+
 class DriverSplashScreen extends StatefulWidget {
   const DriverSplashScreen({Key? key}) : super(key: key);
 
@@ -32,17 +34,10 @@ class _DriverSplashScreenState extends State<DriverSplashScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             // Fare Logo
-            Container(
+            SizedBox(
               height: logoHeight,
-              decoration: const BoxDecoration(
-                color: Colors.transparent,
-              ),
               child: Center(
-                child: Image.asset(
-                  'assets/images/fare_logo2.png',
-                  height: logoHeight,
-                  fit: BoxFit.contain,
-                ),
+                child: FareLogo(height: logoHeight),
               ),
             ),
             SizedBox(height: 24.0 * scale),
